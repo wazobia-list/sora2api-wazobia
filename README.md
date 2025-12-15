@@ -424,3 +424,7 @@ for line in response.iter_lines():
 ---
 
 **⭐ 如果这个项目对你有帮助，请给个 Star！**
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=TheSmallHanCat/sora2api&type=date&legend=top-left)](https://www.star-history.com/#TheSmallHanCat/sora2api&type=date&legend=top-left)
