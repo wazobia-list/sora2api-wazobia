@@ -53,20 +53,22 @@ class Database:
             # Get admin credentials from config_dict if provided, otherwise use defaults
             admin_username = "admin"
             admin_password = "admin"
+            api_key = "han1234"
             error_ban_threshold = 3
 
             if config_dict:
                 global_config = config_dict.get("global", {})
                 admin_username = global_config.get("admin_username", "admin")
                 admin_password = global_config.get("admin_password", "admin")
+                api_key = global_config.get("api_key", "han1234")
 
                 admin_config = config_dict.get("admin", {})
                 error_ban_threshold = admin_config.get("error_ban_threshold", 3)
 
             await db.execute("""
-                INSERT INTO admin_config (id, admin_username, admin_password, error_ban_threshold)
-                VALUES (1, ?, ?, ?)
-            """, (admin_username, admin_password, error_ban_threshold))
+                INSERT INTO admin_config (id, admin_username, admin_password, api_key, error_ban_threshold)
+                VALUES (1, ?, ?, ?, ?)
+            """, (admin_username, admin_password, api_key, error_ban_threshold))
 
         # Ensure proxy_config has a row
         cursor = await db.execute("SELECT COUNT(*) FROM proxy_config")
@@ -142,12 +144,12 @@ class Database:
         if count[0] == 0:
             # Get generation config from config_dict if provided, otherwise use defaults
             image_timeout = 300
-            video_timeout = 1500
+            video_timeout = 3000
 
             if config_dict:
                 generation_config = config_dict.get("generation", {})
                 image_timeout = generation_config.get("image_timeout", 300)
-                video_timeout = generation_config.get("video_timeout", 1500)
+                video_timeout = generation_config.get("video_timeout", 3000)
 
             await db.execute("""
                 INSERT INTO generation_config (id, image_timeout, video_timeout)
@@ -195,6 +197,8 @@ class Database:
                     ("image_concurrency", "INTEGER DEFAULT -1"),
                     ("video_concurrency", "INTEGER DEFAULT -1"),
                     ("client_id", "TEXT"),
+                    ("proxy_url", "TEXT"),
+                    ("is_expired", "BOOLEAN DEFAULT 0"),
                 ]
 
                 for col_name, col_type in columns_to_add:
@@ -224,6 +228,7 @@ class Database:
                 columns_to_add = [
                     ("admin_username", "TEXT DEFAULT 'admin'"),
                     ("admin_password", "TEXT DEFAULT 'admin'"),
+                    ("api_key", "TEXT DEFAULT 'han1234'"),
                 ]
 
                 for col_name, col_type in columns_to_add:
@@ -250,6 +255,21 @@ class Database:
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
 
+            # Check and add missing columns to request_logs table
+            if await self._table_exists(db, "request_logs"):
+                columns_to_add = [
+                    ("task_id", "TEXT"),
+                    ("updated_at", "TIMESTAMP"),
+                ]
+
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "request_logs", col_name):
+                        try:
+                            await db.execute(f"ALTER TABLE request_logs ADD COLUMN {col_name} {col_type}")
+                            print(f"  ✓ Added column '{col_name}' to request_logs table")
+                        except Exception as e:
+                            print(f"  ✗ Failed to add column '{col_name}': {e}")
+
             # Ensure all config tables have their default rows
             # Pass config_dict if available to initialize from setting.toml
             await self._ensure_config_rows(db, config_dict)
@@ -271,6 +291,7 @@ class Database:
                     st TEXT,
                     rt TEXT,
                     client_id TEXT,
+                    proxy_url TEXT,
                     remark TEXT,
                     expiry_time TIMESTAMP,
                     is_active BOOLEAN DEFAULT 1,
@@ -290,7 +311,8 @@ class Database:
                     image_enabled BOOLEAN DEFAULT 1,
                     video_enabled BOOLEAN DEFAULT 1,
                     image_concurrency INTEGER DEFAULT -1,
-                    video_concurrency INTEGER DEFAULT -1
+                    video_concurrency INTEGER DEFAULT -1,
+                    is_expired BOOLEAN DEFAULT 0
                 )
             """)
 
@@ -335,12 +357,14 @@ class Database:
                 CREATE TABLE IF NOT EXISTS request_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     token_id INTEGER,
+                    task_id TEXT,
                     operation TEXT NOT NULL,
                     request_body TEXT,
                     response_body TEXT,
                     status_code INTEGER NOT NULL,
                     duration FLOAT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP,
                     FOREIGN KEY (token_id) REFERENCES tokens(id)
                 )
             """)
@@ -351,6 +375,7 @@ class Database:
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     admin_username TEXT DEFAULT 'admin',
                     admin_password TEXT DEFAULT 'admin',
+                    api_key TEXT DEFAULT 'han1234',
                     error_ban_threshold INTEGER DEFAULT 3,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -397,7 +422,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS generation_config (
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     image_timeout INTEGER DEFAULT 300,
-                    video_timeout INTEGER DEFAULT 1500,
+                    video_timeout INTEGER DEFAULT 3000,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -436,125 +461,16 @@ class Database:
 
         Args:
             config_dict: Configuration dictionary from setting.toml
-            is_first_startup: If True, only update if row doesn't exist. If False, always update.
+            is_first_startup: If True, initialize all config rows from setting.toml.
+                            If False (upgrade mode), only ensure missing config rows exist with default values.
         """
         async with aiosqlite.connect(self.db_path) as db:
-            # On first startup, ensure all config rows exist with values from setting.toml
             if is_first_startup:
+                # First startup: Initialize all config tables with values from setting.toml
                 await self._ensure_config_rows(db, config_dict)
-
-            # Initialize admin config
-            admin_config = config_dict.get("admin", {})
-            error_ban_threshold = admin_config.get("error_ban_threshold", 3)
-
-            # Get admin credentials from global config
-            global_config = config_dict.get("global", {})
-            admin_username = global_config.get("admin_username", "admin")
-            admin_password = global_config.get("admin_password", "admin")
-
-            if not is_first_startup:
-                # On upgrade, update the configuration
-                await db.execute("""
-                    UPDATE admin_config
-                    SET admin_username = ?, admin_password = ?, error_ban_threshold = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = 1
-                """, (admin_username, admin_password, error_ban_threshold))
-
-            # Initialize proxy config
-            proxy_config = config_dict.get("proxy", {})
-            proxy_enabled = proxy_config.get("proxy_enabled", False)
-            proxy_url = proxy_config.get("proxy_url", "")
-            # Convert empty string to None
-            proxy_url = proxy_url if proxy_url else None
-
-            if is_first_startup:
-                await db.execute("""
-                    INSERT OR IGNORE INTO proxy_config (id, proxy_enabled, proxy_url)
-                    VALUES (1, ?, ?)
-                """, (proxy_enabled, proxy_url))
             else:
-                await db.execute("""
-                    UPDATE proxy_config
-                    SET proxy_enabled = ?, proxy_url = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = 1
-                """, (proxy_enabled, proxy_url))
-
-            # Initialize watermark-free config
-            watermark_config = config_dict.get("watermark_free", {})
-            watermark_free_enabled = watermark_config.get("watermark_free_enabled", False)
-            parse_method = watermark_config.get("parse_method", "third_party")
-            custom_parse_url = watermark_config.get("custom_parse_url", "")
-            custom_parse_token = watermark_config.get("custom_parse_token", "")
-
-            # Convert empty strings to None
-            custom_parse_url = custom_parse_url if custom_parse_url else None
-            custom_parse_token = custom_parse_token if custom_parse_token else None
-
-            if is_first_startup:
-                await db.execute("""
-                    INSERT OR IGNORE INTO watermark_free_config (id, watermark_free_enabled, parse_method, custom_parse_url, custom_parse_token)
-                    VALUES (1, ?, ?, ?, ?)
-                """, (watermark_free_enabled, parse_method, custom_parse_url, custom_parse_token))
-            else:
-                await db.execute("""
-                    UPDATE watermark_free_config
-                    SET watermark_free_enabled = ?, parse_method = ?, custom_parse_url = ?,
-                        custom_parse_token = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = 1
-                """, (watermark_free_enabled, parse_method, custom_parse_url, custom_parse_token))
-
-            # Initialize cache config
-            cache_config = config_dict.get("cache", {})
-            cache_enabled = cache_config.get("enabled", False)
-            cache_timeout = cache_config.get("timeout", 600)
-            cache_base_url = cache_config.get("base_url", "")
-            # Convert empty string to None
-            cache_base_url = cache_base_url if cache_base_url else None
-
-            if is_first_startup:
-                await db.execute("""
-                    INSERT OR IGNORE INTO cache_config (id, cache_enabled, cache_timeout, cache_base_url)
-                    VALUES (1, ?, ?, ?)
-                """, (cache_enabled, cache_timeout, cache_base_url))
-            else:
-                await db.execute("""
-                    UPDATE cache_config
-                    SET cache_enabled = ?, cache_timeout = ?, cache_base_url = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = 1
-                """, (cache_enabled, cache_timeout, cache_base_url))
-
-            # Initialize generation config
-            generation_config = config_dict.get("generation", {})
-            image_timeout = generation_config.get("image_timeout", 300)
-            video_timeout = generation_config.get("video_timeout", 1500)
-
-            if is_first_startup:
-                await db.execute("""
-                    INSERT OR IGNORE INTO generation_config (id, image_timeout, video_timeout)
-                    VALUES (1, ?, ?)
-                """, (image_timeout, video_timeout))
-            else:
-                await db.execute("""
-                    UPDATE generation_config
-                    SET image_timeout = ?, video_timeout = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = 1
-                """, (image_timeout, video_timeout))
-
-            # Initialize token refresh config
-            token_refresh_config = config_dict.get("token_refresh", {})
-            at_auto_refresh_enabled = token_refresh_config.get("at_auto_refresh_enabled", False)
-
-            if is_first_startup:
-                await db.execute("""
-                    INSERT OR IGNORE INTO token_refresh_config (id, at_auto_refresh_enabled)
-                    VALUES (1, ?)
-                """, (at_auto_refresh_enabled,))
-            else:
-                await db.execute("""
-                    UPDATE token_refresh_config
-                    SET at_auto_refresh_enabled = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = 1
-                """, (at_auto_refresh_enabled,))
+                # Upgrade mode: Only ensure missing config rows exist (with default values, not from TOML)
+                await self._ensure_config_rows(db, config_dict=None)
 
             await db.commit()
 
@@ -563,12 +479,12 @@ class Database:
         """Add a new token"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("""
-                INSERT INTO tokens (token, email, username, name, st, rt, client_id, remark, expiry_time, is_active,
+                INSERT INTO tokens (token, email, username, name, st, rt, client_id, proxy_url, remark, expiry_time, is_active,
                                    plan_type, plan_title, subscription_end, sora2_supported, sora2_invite_code,
                                    sora2_redeemed_count, sora2_total_count, sora2_remaining_count, sora2_cooldown_until,
                                    image_enabled, video_enabled, image_concurrency, video_concurrency)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (token.token, token.email, "", token.name, token.st, token.rt, token.client_id,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (token.token, token.email, "", token.name, token.st, token.rt, token.client_id, token.proxy_url,
                   token.remark, token.expiry_time, token.is_active,
                   token.plan_type, token.plan_title, token.subscription_end,
                   token.sora2_supported, token.sora2_invite_code,
@@ -656,7 +572,23 @@ class Database:
                 UPDATE tokens SET is_active = ? WHERE id = ?
             """, (is_active, token_id))
             await db.commit()
-    
+
+    async def mark_token_expired(self, token_id: int):
+        """Mark token as expired and disable it"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE tokens SET is_expired = 1, is_active = 0 WHERE id = ?
+            """, (token_id,))
+            await db.commit()
+
+    async def clear_token_expired(self, token_id: int):
+        """Clear token expired flag"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE tokens SET is_expired = 0 WHERE id = ?
+            """, (token_id,))
+            await db.commit()
+
     async def update_token_sora2(self, token_id: int, supported: bool, invite_code: Optional[str] = None,
                                 redeemed_count: int = 0, total_count: int = 0, remaining_count: int = 0):
         """Update token Sora2 support info"""
@@ -704,6 +636,7 @@ class Database:
                           st: Optional[str] = None,
                           rt: Optional[str] = None,
                           client_id: Optional[str] = None,
+                          proxy_url: Optional[str] = None,
                           remark: Optional[str] = None,
                           expiry_time: Optional[datetime] = None,
                           plan_type: Optional[str] = None,
@@ -713,7 +646,7 @@ class Database:
                           video_enabled: Optional[bool] = None,
                           image_concurrency: Optional[int] = None,
                           video_concurrency: Optional[int] = None):
-        """Update token (AT, ST, RT, client_id, remark, expiry_time, subscription info, image_enabled, video_enabled)"""
+        """Update token (AT, ST, RT, client_id, proxy_url, remark, expiry_time, subscription info, image_enabled, video_enabled)"""
         async with aiosqlite.connect(self.db_path) as db:
             # Build dynamic update query
             updates = []
@@ -734,6 +667,10 @@ class Database:
             if client_id is not None:
                 updates.append("client_id = ?")
                 params.append(client_id)
+
+            if proxy_url is not None:
+                updates.append("proxy_url = ?")
+                params.append(proxy_url)
 
             if remark is not None:
                 updates.append("remark = ?")
@@ -846,8 +783,13 @@ class Database:
                 """, (today, token_id))
             await db.commit()
     
-    async def increment_error_count(self, token_id: int):
-        """Increment error count (both total and consecutive)"""
+    async def increment_error_count(self, token_id: int, increment_consecutive: bool = True):
+        """Increment error count
+
+        Args:
+            token_id: Token ID
+            increment_consecutive: Whether to increment consecutive error count (False for overload errors)
+        """
         from datetime import date
         async with aiosqlite.connect(self.db_path) as db:
             today = str(date.today())
@@ -857,26 +799,46 @@ class Database:
 
             # If date changed, reset today's error count
             if row and row[0] != today:
-                await db.execute("""
-                    UPDATE token_stats
-                    SET error_count = error_count + 1,
-                        consecutive_error_count = consecutive_error_count + 1,
-                        today_error_count = 1,
-                        today_date = ?,
-                        last_error_at = CURRENT_TIMESTAMP
-                    WHERE token_id = ?
-                """, (today, token_id))
+                if increment_consecutive:
+                    await db.execute("""
+                        UPDATE token_stats
+                        SET error_count = error_count + 1,
+                            consecutive_error_count = consecutive_error_count + 1,
+                            today_error_count = 1,
+                            today_date = ?,
+                            last_error_at = CURRENT_TIMESTAMP
+                        WHERE token_id = ?
+                    """, (today, token_id))
+                else:
+                    await db.execute("""
+                        UPDATE token_stats
+                        SET error_count = error_count + 1,
+                            today_error_count = 1,
+                            today_date = ?,
+                            last_error_at = CURRENT_TIMESTAMP
+                        WHERE token_id = ?
+                    """, (today, token_id))
             else:
-                # Same day, just increment all counters
-                await db.execute("""
-                    UPDATE token_stats
-                    SET error_count = error_count + 1,
-                        consecutive_error_count = consecutive_error_count + 1,
-                        today_error_count = today_error_count + 1,
-                        today_date = ?,
-                        last_error_at = CURRENT_TIMESTAMP
-                    WHERE token_id = ?
-                """, (today, token_id))
+                # Same day, just increment counters
+                if increment_consecutive:
+                    await db.execute("""
+                        UPDATE token_stats
+                        SET error_count = error_count + 1,
+                            consecutive_error_count = consecutive_error_count + 1,
+                            today_error_count = today_error_count + 1,
+                            today_date = ?,
+                            last_error_at = CURRENT_TIMESTAMP
+                        WHERE token_id = ?
+                    """, (today, token_id))
+                else:
+                    await db.execute("""
+                        UPDATE token_stats
+                        SET error_count = error_count + 1,
+                            today_error_count = today_error_count + 1,
+                            today_date = ?,
+                            last_error_at = CURRENT_TIMESTAMP
+                        WHERE token_id = ?
+                    """, (today, token_id))
             await db.commit()
     
     async def reset_error_count(self, token_id: int):
@@ -921,15 +883,40 @@ class Database:
             return None
     
     # Request log operations
-    async def log_request(self, log: RequestLog):
-        """Log a request"""
+    async def log_request(self, log: RequestLog) -> int:
+        """Log a request and return log ID"""
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT INTO request_logs (token_id, operation, request_body, response_body, status_code, duration)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (log.token_id, log.operation, log.request_body, log.response_body, 
+            cursor = await db.execute("""
+                INSERT INTO request_logs (token_id, task_id, operation, request_body, response_body, status_code, duration)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (log.token_id, log.task_id, log.operation, log.request_body, log.response_body,
                   log.status_code, log.duration))
             await db.commit()
+            return cursor.lastrowid
+
+    async def update_request_log(self, log_id: int, response_body: Optional[str] = None,
+                                 status_code: Optional[int] = None, duration: Optional[float] = None):
+        """Update request log with completion data"""
+        async with aiosqlite.connect(self.db_path) as db:
+            updates = []
+            params = []
+
+            if response_body is not None:
+                updates.append("response_body = ?")
+                params.append(response_body)
+            if status_code is not None:
+                updates.append("status_code = ?")
+                params.append(status_code)
+            if duration is not None:
+                updates.append("duration = ?")
+                params.append(duration)
+
+            if updates:
+                updates.append("updated_at = CURRENT_TIMESTAMP")
+                params.append(log_id)
+                query = f"UPDATE request_logs SET {', '.join(updates)} WHERE id = ?"
+                await db.execute(query, params)
+                await db.commit()
     
     async def get_recent_logs(self, limit: int = 100) -> List[dict]:
         """Get recent logs with token email"""
@@ -939,13 +926,15 @@ class Database:
                 SELECT
                     rl.id,
                     rl.token_id,
+                    rl.task_id,
                     rl.operation,
                     rl.request_body,
                     rl.response_body,
                     rl.status_code,
                     rl.duration,
                     rl.created_at,
-                    t.email as token_email
+                    t.email as token_email,
+                    t.username as token_username
                 FROM request_logs rl
                 LEFT JOIN tokens t ON rl.token_id = t.id
                 ORDER BY rl.created_at DESC
@@ -953,7 +942,13 @@ class Database:
             """, (limit,))
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
-    
+
+    async def clear_all_logs(self):
+        """Clear all request logs"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM request_logs")
+            await db.commit()
+
     # Admin config operations
     async def get_admin_config(self) -> AdminConfig:
         """Get admin configuration"""
@@ -965,16 +960,16 @@ class Database:
                 return AdminConfig(**dict(row))
             # If no row exists, return a default config with placeholder values
             # This should not happen in normal operation as _ensure_config_rows should create it
-            return AdminConfig(admin_username="admin", admin_password="admin")
+            return AdminConfig(admin_username="admin", admin_password="admin", api_key="han1234")
     
     async def update_admin_config(self, config: AdminConfig):
         """Update admin configuration"""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 UPDATE admin_config
-                SET admin_username = ?, admin_password = ?, error_ban_threshold = ?, updated_at = CURRENT_TIMESTAMP
+                SET admin_username = ?, admin_password = ?, api_key = ?, error_ban_threshold = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
-            """, (config.admin_username, config.admin_password, config.error_ban_threshold))
+            """, (config.admin_username, config.admin_password, config.api_key, config.error_ban_threshold))
             await db.commit()
     
     # Proxy config operations
@@ -1087,7 +1082,7 @@ class Database:
                 return GenerationConfig(**dict(row))
             # If no row exists, return a default config
             # This should not happen in normal operation as _ensure_config_rows should create it
-            return GenerationConfig(image_timeout=300, video_timeout=1500)
+            return GenerationConfig(image_timeout=300, video_timeout=3000)
 
     async def update_generation_config(self, image_timeout: int = None, video_timeout: int = None):
         """Update generation configuration"""
@@ -1101,10 +1096,10 @@ class Database:
                 current = dict(row)
                 # Update only provided fields
                 new_image_timeout = image_timeout if image_timeout is not None else current.get("image_timeout", 300)
-                new_video_timeout = video_timeout if video_timeout is not None else current.get("video_timeout", 1500)
+                new_video_timeout = video_timeout if video_timeout is not None else current.get("video_timeout", 3000)
             else:
                 new_image_timeout = image_timeout if image_timeout is not None else 300
-                new_video_timeout = video_timeout if video_timeout is not None else 1500
+                new_video_timeout = video_timeout if video_timeout is not None else 3000
 
             await db.execute("""
                 UPDATE generation_config

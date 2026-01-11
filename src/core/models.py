@@ -12,6 +12,7 @@ class Token(BaseModel):
     st: Optional[str] = None
     rt: Optional[str] = None
     client_id: Optional[str] = None
+    proxy_url: Optional[str] = None
     remark: Optional[str] = None
     expiry_time: Optional[datetime] = None
     is_active: bool = True
@@ -37,6 +38,8 @@ class Token(BaseModel):
     # 并发限制
     image_concurrency: int = -1  # 图片并发数限制，-1表示不限制
     video_concurrency: int = -1  # 视频并发数限制，-1表示不限制
+    # 过期标记
+    is_expired: bool = False  # Token是否已过期（401 token_invalidated）
 
 class TokenStats(BaseModel):
     """Token statistics"""
@@ -70,18 +73,21 @@ class RequestLog(BaseModel):
     """Request log model"""
     id: Optional[int] = None
     token_id: Optional[int] = None
+    task_id: Optional[str] = None  # Link to task for progress tracking
     operation: str
     request_body: Optional[str] = None
     response_body: Optional[str] = None
-    status_code: int
-    duration: float
+    status_code: int  # -1 for in-progress
+    duration: float  # -1.0 for in-progress
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 class AdminConfig(BaseModel):
     """Admin configuration"""
     id: int = 1
     admin_username: str  # Read from database, initialized from setting.toml on first startup
     admin_password: str  # Read from database, initialized from setting.toml on first startup
+    api_key: str  # Read from database, initialized from setting.toml on first startup
     error_ban_threshold: int = 3
     updated_at: Optional[datetime] = None
 

@@ -13,18 +13,6 @@
 
 ---
 
-## 📋 目录
-
-- [功能特性](#功能特性)
-- [快速开始](#快速开始)
-- [使用指南](#使用指南)
-  - [快速参考](#快速参考)
-  - [管理后台](#管理后台)
-  - [API 调用](#api-调用)
-  - [视频角色功能](#视频角色功能)
-- [许可证](#许可证)
-
----
 
 ## ✨ 功能特性
 
@@ -36,6 +24,7 @@
 - 📊 **多尺寸支持** - 横屏、竖屏等多种规格
 - 🎭 **视频角色功能** - 创建角色，生成角色视频
 - 🎬 **Remix 功能** - 基于已有视频继续创作
+- 🎥 **分镜功能** - 支持生成分镜视频
 
 ### 高级特性
 - 🔐 **Token 管理** - 支持多 Token 管理和轮询负载均衡
@@ -121,14 +110,15 @@ python main.py
 
 | 功能 | 模型 | 说明 |
 |------|------|------|
-| 文生图 | `sora-image*` | 使用 `content` 为字符串 |
-| 图生图 | `sora-image*` | 使用 `content` 数组 + `image_url` |
-| 文生视频 | `sora-video*` | 使用 `content` 为字符串 |
-| 图生视频 | `sora-video*` | 使用 `content` 数组 + `image_url` |
-| 创建角色 | `sora-video*` | 使用 `content` 数组 + `video_url` |
-| 角色生成视频 | `sora-video*` | 使用 `content` 数组 + `video_url` + 文本 |
-| Remix | `sora-video*` | 在 `content` 中包含 Remix ID |
-| 视频分镜 | `sora-video*` | 在 `content` 中使用```[时长s]提示词```格式触发 |
+| 文生图 | `gpt-image*` | 使用 `content` 为字符串 |
+| 图生图 | `gpt-image*` | 使用 `content` 数组 + `image_url` |
+| 文生视频 | `sora2-*` | 使用 `content` 为字符串 |
+| 图生视频 | `sora2-*` | 使用 `content` 数组 + `image_url` |
+| 视频风格 | `sora2-*` | 在提示词中使用 `{风格ID}` 格式,如 `{anime}提示词` |
+| 创建角色 | `sora2-*` | 使用 `content` 数组 + `video_url` |
+| 角色生成视频 | `sora2-*` | 使用 `content` 数组 + `video_url` + 文本 |
+| Remix | `sora2-*` | 在 `content` 中包含 Remix ID |
+| 视频分镜 | `sora2-*` | 在 `content` 中使用```[时长s]提示词```格式触发 |
 
 ---
 
@@ -146,20 +136,44 @@ python main.py
 
 | 模型 | 说明 | 尺寸 |
 |------|------|------|
-| `sora-image` | 文生图（默认） | 360×360 |
-| `sora-image-landscape` | 文生图（横屏） | 540×360 |
-| `sora-image-portrait` | 文生图（竖屏） | 360×540 |
+| `gpt-image` | 文生图（正方形） | 360×360 |
+| `gpt-image-landscape` | 文生图（横屏） | 540×360 |
+| `gpt-image-portrait` | 文生图（竖屏） | 360×540 |
 
 **视频模型**
 
+**标准版（Sora2）**
+
 | 模型 | 时长 | 方向 | 说明 |
 |------|------|------|------|
-| `sora-video-10s` | 10秒 | 横屏 | 文生视频/图生视频 |
-| `sora-video-15s` | 15秒 | 横屏 | 文生视频/图生视频 |
-| `sora-video-landscape-10s` | 10秒 | 横屏 | 文生视频/图生视频 |
-| `sora-video-landscape-15s` | 15秒 | 横屏 | 文生视频/图生视频 |
-| `sora-video-portrait-10s` | 10秒 | 竖屏 | 文生视频/图生视频 |
-| `sora-video-portrait-15s` | 15秒 | 竖屏 | 文生视频/图生视频 |
+| `sora2-landscape-10s` | 10秒 | 横屏 | 文生视频/图生视频 |
+| `sora2-landscape-15s` | 15秒 | 横屏 | 文生视频/图生视频 |
+| `sora2-landscape-25s` | 25秒 | 横屏 | 文生视频/图生视频 |
+| `sora2-portrait-10s` | 10秒 | 竖屏 | 文生视频/图生视频 |
+| `sora2-portrait-15s` | 15秒 | 竖屏 | 文生视频/图生视频 |
+| `sora2-portrait-25s` | 25秒 | 竖屏 | 文生视频/图生视频 |
+
+**Pro 版（需要 ChatGPT Pro 订阅）**
+
+| 模型 | 时长 | 方向 | 说明 |
+|------|------|------|------|
+| `sora2pro-landscape-10s` | 10秒 | 横屏 | Pro 质量文生视频/图生视频 |
+| `sora2pro-landscape-15s` | 15秒 | 横屏 | Pro 质量文生视频/图生视频 |
+| `sora2pro-landscape-25s` | 25秒 | 横屏 | Pro 质量文生视频/图生视频 |
+| `sora2pro-portrait-10s` | 10秒 | 竖屏 | Pro 质量文生视频/图生视频 |
+| `sora2pro-portrait-15s` | 15秒 | 竖屏 | Pro 质量文生视频/图生视频 |
+| `sora2pro-portrait-25s` | 25秒 | 竖屏 | Pro 质量文生视频/图生视频 |
+
+**Pro HD 版（需要 ChatGPT Pro 订阅，高清质量）**
+
+| 模型 | 时长 | 方向 | 说明 |
+|------|------|------|------|
+| `sora2pro-hd-landscape-10s` | 10秒 | 横屏 | Pro 高清文生视频/图生视频 |
+| `sora2pro-hd-landscape-15s` | 15秒 | 横屏 | Pro 高清文生视频/图生视频 |
+| `sora2pro-hd-portrait-10s` | 10秒 | 竖屏 | Pro 高清文生视频/图生视频 |
+| `sora2pro-hd-portrait-15s` | 15秒 | 竖屏 | Pro 高清文生视频/图生视频 |
+
+> **注意：** Pro 系列模型需要 ChatGPT Pro 订阅（`plan_type: "chatgpt_pro"`）。如果没有 Pro 账号，请求这些模型会返回错误。
 
 #### 请求示例
 
@@ -170,13 +184,14 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
   -H "Authorization: Bearer han1234" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sora-image",
+    "model": "gpt-image",
     "messages": [
       {
         "role": "user",
         "content": "一只可爱的小猫咪"
       }
-    ]
+    ],
+    "stream": true
   }'
 ```
 
@@ -187,7 +202,7 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
   -H "Authorization: Bearer han1234" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sora-image",
+    "model": "gpt-image",
     "messages": [
       {
         "role": "user",
@@ -216,7 +231,7 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
   -H "Authorization: Bearer han1234" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sora-video-landscape-10s",
+    "model": "sora2-landscape-10s",
     "messages": [
       {
         "role": "user",
@@ -234,7 +249,7 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
   -H "Authorization: Bearer han1234" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sora-video-landscape-10s",
+    "model": "sora2-landscape-10s",
     "messages": [
       {
         "role": "user",
@@ -265,13 +280,14 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
   -H "Authorization: Bearer han1234" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sora-video-landscape-10s",
+    "model": "sora2-landscape-10s",
     "messages": [
       {
         "role": "user",
         "content": "https://sora.chatgpt.com/p/s_68e3a06dcd888191b150971da152c1f5改成水墨画风格"
       }
-    ]
+    ],
+    "stream": true
   }'
 ```
 
@@ -291,15 +307,100 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
   -H "Authorization: Bearer han1234" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sora-video-landscape-10s",
+    "model": "sora2-landscape-10s",
     "messages": [
       {
         "role": "user",
         "content": "[5.0s]猫猫从飞机上跳伞 [5.0s]猫猫降落 [10.0s]猫猫在田野奔跑"
       }
-    ]
+    ],
+    "stream": true
   }'
 ```
+
+### 视频风格功能
+
+Sora2API 支持**视频风格**功能，可以为生成的视频应用预设风格。
+
+#### 使用方法
+
+在提示词中使用 `{风格ID}` 格式指定风格，系统会自动提取并应用该风格。
+
+#### 支持的风格
+
+| 风格ID | 显示名称 | 说明 |
+|--------|----------|------|
+| `festive` | Festive | 节日风格 |
+| `kakalaka` | 🪭👺 | 混沌风格 |
+| `news` | News | 新闻风格 |
+| `selfie` | Selfie | 自拍风格 |
+| `handheld` | Handheld | 手持风格 |
+| `golden` | Golden | 金色风格 |
+| `anime` | Anime | 动漫风格 |
+| `retro` | Retro | 复古风格 |
+| `nostalgic` | Vintage | 怀旧风格 |
+| `comic` | Comic | 漫画风格 |
+
+#### 示例
+
+**使用动漫风格生成视频**
+
+```bash
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Authorization: Bearer han1234" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sora2-landscape-10s",
+    "messages": [
+      {
+        "role": "user",
+        "content": "{anime}一只小猫在草地上奔跑"
+      }
+    ],
+    "stream": true
+  }'
+```
+
+**使用复古风格生成视频**
+
+```bash
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Authorization: Bearer han1234" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sora2-landscape-10s",
+    "messages": [
+      {
+        "role": "user",
+        "content": "{retro}城市街道夜景"
+      }
+    ],
+    "stream": true
+  }'
+```
+
+**在Remix中使用风格**
+
+```bash
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Authorization: Bearer han1234" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sora2-landscape-10s",
+    "messages": [
+      {
+        "role": "user",
+        "content": "{comic}https://sora.chatgpt.com/p/s_68e3a06dcd888191b150971da152c1f5改成漫画风格"
+      }
+    ],
+    "stream": true
+  }'
+```
+
+**注意事项**
+- 风格标记 `{风格ID}` 可以放在提示词的任意位置
+- 系统会自动提取风格ID并从提示词中移除风格标记
+- 如果不指定风格，将使用默认风格生成
 
 ### 视频角色功能
 
@@ -321,7 +422,7 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
   -H "Authorization: Bearer han1234" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sora-video-landscape-10s",
+    "model": "sora2-landscape-10s",
     "messages": [
       {
         "role": "user",
@@ -348,7 +449,7 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
   -H "Authorization: Bearer han1234" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sora-video-landscape-10s",
+    "model": "sora2-landscape-10s",
     "messages": [
       {
         "role": "user",
@@ -388,7 +489,7 @@ response = requests.post(
         "Content-Type": "application/json"
     },
     json={
-        "model": "sora-video-landscape-10s",
+        "model": "sora2-landscape-10s",
         "messages": [
             {
                 "role": "user",
@@ -435,3 +536,7 @@ for line in response.iter_lines():
 ---
 
 **⭐ 如果这个项目对你有帮助，请给个 Star！**
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=TheSmallHanCat/sora2api&type=date&legend=top-left)](https://www.star-history.com/#TheSmallHanCat/sora2api&type=date&legend=top-left)

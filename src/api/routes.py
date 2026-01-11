@@ -151,7 +151,6 @@ async def create_chat_completion(
                     result = chunk
 
                 if result:
-                    import json
                     return JSONResponse(content=json.loads(result))
                 else:
                     return JSONResponse(
@@ -169,7 +168,6 @@ async def create_chat_completion(
         # Handle streaming
         if request.stream:
             async def generate():
-                import json as json_module  # Import inside function to avoid scope issues
                 try:
                     async for chunk in generation_handler.handle_generation(
                         model=request.model,
@@ -181,16 +179,28 @@ async def create_chat_completion(
                     ):
                         yield chunk
                 except Exception as e:
+                    # Try to parse structured error (JSON format)
+                    error_data = None
+                    try:
+                        error_data = json.loads(str(e))
+                    except:
+                        pass
+
                     # Return OpenAI-compatible error format
-                    error_response = {
-                        "error": {
-                            "message": str(e),
-                            "type": "server_error",
-                            "param": None,
-                            "code": None
+                    if error_data and isinstance(error_data, dict) and "error" in error_data:
+                        # Structured error (e.g., unsupported_country_code)
+                        error_response = error_data
+                    else:
+                        # Generic error
+                        error_response = {
+                            "error": {
+                                "message": str(e),
+                                "type": "server_error",
+                                "param": None,
+                                "code": None
+                            }
                         }
-                    }
-                    error_chunk = f'data: {json_module.dumps(error_response)}\n\n'
+                    error_chunk = f'data: {json.dumps(error_response)}\n\n'
                     yield error_chunk
                     yield 'data: [DONE]\n\n'
 
@@ -217,7 +227,6 @@ async def create_chat_completion(
                 result = chunk
 
             if result:
-                import json
                 return JSONResponse(content=json.loads(result))
             else:
                 # Return OpenAI-compatible error format

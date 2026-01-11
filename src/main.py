@@ -109,16 +109,20 @@ async def startup_event():
         await db.check_and_migrate_db(config_dict)
         print("✓ Database migration check completed.")
 
-    # Load admin credentials from database
+    # Load admin credentials and API key from database
     admin_config = await db.get_admin_config()
     config.set_admin_username_from_db(admin_config.admin_username)
     config.set_admin_password_from_db(admin_config.admin_password)
+    config.api_key = admin_config.api_key
 
     # Load cache configuration from database
     cache_config = await db.get_cache_config()
     config.set_cache_enabled(cache_config.cache_enabled)
     config.set_cache_timeout(cache_config.cache_timeout)
     config.set_cache_base_url(cache_config.cache_base_url or "")
+    
+    # Sync cache timeout to file cache instance
+    generation_handler.file_cache.set_timeout(cache_config.cache_timeout)
 
     # Load generation configuration from database
     generation_config = await db.get_generation_config()

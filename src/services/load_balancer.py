@@ -17,13 +17,14 @@ class LoadBalancer:
         # Use image timeout from config as lock timeout
         self.token_lock = TokenLock(lock_timeout=config.image_timeout)
 
-    async def select_token(self, for_image_generation: bool = False, for_video_generation: bool = False) -> Optional[Token]:
+    async def select_token(self, for_image_generation: bool = False, for_video_generation: bool = False, require_pro: bool = False) -> Optional[Token]:
         """
         Select a token using random load balancing
 
         Args:
             for_image_generation: If True, only select tokens that are not locked for image generation and have image_enabled=True
             for_video_generation: If True, filter out tokens with Sora2 quota exhausted (sora2_cooldown_until not expired), tokens that don't support Sora2, and tokens with video_enabled=False
+            require_pro: If True, only select tokens with ChatGPT Pro subscription (plan_type="chatgpt_pro")
 
         Returns:
             Selected token or None if no available tokens
@@ -55,6 +56,13 @@ class LoadBalancer:
 
         if not active_tokens:
             return None
+
+        # Filter for Pro tokens if required
+        if require_pro:
+            pro_tokens = [token for token in active_tokens if token.plan_type == "chatgpt_pro"]
+            if not pro_tokens:
+                return None
+            active_tokens = pro_tokens
 
         # If for video generation, filter out tokens with Sora2 quota exhausted and tokens without Sora2 support
         if for_video_generation:

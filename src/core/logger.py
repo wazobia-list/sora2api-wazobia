@@ -15,17 +15,21 @@ class DebugLogger:
     
     def _setup_logger(self):
         """Setup file logger"""
+        # Clear log file on startup
+        if self.log_file.exists():
+            self.log_file.unlink()
+
         # Create logger
         self.logger = logging.getLogger("debug_logger")
         self.logger.setLevel(logging.DEBUG)
-        
+
         # Remove existing handlers
         self.logger.handlers.clear()
-        
+
         # Create file handler
         file_handler = logging.FileHandler(
-            self.log_file, 
-            mode='a', 
+            self.log_file,
+            mode='a',
             encoding='utf-8'
         )
         file_handler.setLevel(logging.DEBUG)
@@ -67,16 +71,20 @@ class DebugLogger:
         proxy: Optional[str] = None
     ):
         """Log API request details to log.txt"""
-        
+
+        # Check if debug mode is enabled
+        if not config.debug_enabled:
+            return
+
         try:
             self._write_separator()
             self.logger.info(f"🔵 [REQUEST] {self._format_timestamp()}")
             self._write_separator("-")
-            
+
             # Basic info
             self.logger.info(f"Method: {method}")
             self.logger.info(f"URL: {url}")
-            
+
             # Headers
             self.logger.info("\n📋 Headers:")
             masked_headers = dict(headers)
@@ -85,10 +93,10 @@ class DebugLogger:
                 if auth_value.startswith("Bearer "):
                     token = auth_value[7:]
                     masked_headers["Authorization"] = f"Bearer {self._mask_token(token)}"
-            
+
             for key, value in masked_headers.items():
                 self.logger.info(f"  {key}: {value}")
-            
+
             # Body
             if body is not None:
                 self.logger.info("\n📦 Request Body:")
@@ -97,7 +105,7 @@ class DebugLogger:
                     self.logger.info(body_str)
                 else:
                     self.logger.info(str(body))
-            
+
             # Files
             if files:
                 self.logger.info("\n📎 Files:")
@@ -112,14 +120,14 @@ class DebugLogger:
                 except (AttributeError, TypeError):
                     # Fallback for objects that don't support iteration
                     self.logger.info("  <binary file data>")
-            
+
             # Proxy
             if proxy:
                 self.logger.info(f"\n🌐 Proxy: {proxy}")
-            
+
             self._write_separator()
             self.logger.info("")  # Empty line
-            
+
         except Exception as e:
             self.logger.error(f"Error logging request: {e}")
     
@@ -131,25 +139,29 @@ class DebugLogger:
         duration_ms: Optional[float] = None
     ):
         """Log API response details to log.txt"""
-        
+
+        # Check if debug mode is enabled
+        if not config.debug_enabled:
+            return
+
         try:
             self._write_separator()
             self.logger.info(f"🟢 [RESPONSE] {self._format_timestamp()}")
             self._write_separator("-")
-            
+
             # Status
             status_emoji = "✅" if 200 <= status_code < 300 else "❌"
             self.logger.info(f"Status: {status_code} {status_emoji}")
-            
+
             # Duration
             if duration_ms is not None:
                 self.logger.info(f"Duration: {duration_ms:.2f}ms")
-            
+
             # Headers
             self.logger.info("\n📋 Response Headers:")
             for key, value in headers.items():
                 self.logger.info(f"  {key}: {value}")
-            
+
             # Body
             self.logger.info("\n📦 Response Body:")
             if isinstance(body, (dict, list)):
@@ -169,7 +181,7 @@ class DebugLogger:
                         self.logger.info(body)
             else:
                 self.logger.info(str(body))
-            
+
             self._write_separator()
             self.logger.info("")  # Empty line
             
@@ -183,17 +195,21 @@ class DebugLogger:
         response_text: Optional[str] = None
     ):
         """Log API error details to log.txt"""
-        
+
+        # Check if debug mode is enabled
+        if not config.debug_enabled:
+            return
+
         try:
             self._write_separator()
             self.logger.info(f"🔴 [ERROR] {self._format_timestamp()}")
             self._write_separator("-")
-            
+
             if status_code:
                 self.logger.info(f"Status Code: {status_code}")
-            
+
             self.logger.info(f"Error Message: {error_message}")
-            
+
             if response_text:
                 self.logger.info("\n📦 Error Response:")
                 # Try to parse as JSON
@@ -207,15 +223,20 @@ class DebugLogger:
                         self.logger.info(f"{response_text[:2000]}... (truncated)")
                     else:
                         self.logger.info(response_text)
-            
+
             self._write_separator()
             self.logger.info("")  # Empty line
-            
+
         except Exception as e:
             self.logger.error(f"Error logging error: {e}")
     
     def log_info(self, message: str):
         """Log general info message to log.txt"""
+
+        # Check if debug mode is enabled
+        if not config.debug_enabled:
+            return
+
         try:
             self.logger.info(f"ℹ️  [{self._format_timestamp()}] {message}")
         except Exception as e:

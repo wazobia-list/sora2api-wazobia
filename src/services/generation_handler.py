@@ -19,52 +19,141 @@ from ..core.logger import debug_logger
 
 # Model configuration
 MODEL_CONFIG = {
-    "sora-image": {
+    "gpt-image": {
         "type": "image",
         "width": 360,
         "height": 360
     },
-    "sora-image-landscape": {
+    "gpt-image-landscape": {
         "type": "image",
         "width": 540,
         "height": 360
     },
-    "sora-image-portrait": {
+    "gpt-image-portrait": {
         "type": "image",
         "width": 360,
         "height": 540
     },
     # Video models with 10s duration (300 frames)
-    "sora-video-10s": {
+    "sora2-landscape-10s": {
         "type": "video",
         "orientation": "landscape",
         "n_frames": 300
     },
-    "sora-video-landscape-10s": {
-        "type": "video",
-        "orientation": "landscape",
-        "n_frames": 300
-    },
-    "sora-video-portrait-10s": {
+    "sora2-portrait-10s": {
         "type": "video",
         "orientation": "portrait",
         "n_frames": 300
     },
     # Video models with 15s duration (450 frames)
-    "sora-video-15s": {
+    "sora2-landscape-15s": {
         "type": "video",
         "orientation": "landscape",
         "n_frames": 450
     },
-    "sora-video-landscape-15s": {
-        "type": "video",
-        "orientation": "landscape",
-        "n_frames": 450
-    },
-    "sora-video-portrait-15s": {
+    "sora2-portrait-15s": {
         "type": "video",
         "orientation": "portrait",
         "n_frames": 450
+    },
+    # Video models with 25s duration (750 frames) - require Pro subscription
+    "sora2-landscape-25s": {
+        "type": "video",
+        "orientation": "landscape",
+        "n_frames": 750,
+        "model": "sy_8",
+        "size": "small",
+        "require_pro": True
+    },
+    "sora2-portrait-25s": {
+        "type": "video",
+        "orientation": "portrait",
+        "n_frames": 750,
+        "model": "sy_8",
+        "size": "small",
+        "require_pro": True
+    },
+    # Pro video models (require Pro subscription)
+    "sora2pro-landscape-10s": {
+        "type": "video",
+        "orientation": "landscape",
+        "n_frames": 300,
+        "model": "sy_ore",
+        "size": "small",
+        "require_pro": True
+    },
+    "sora2pro-portrait-10s": {
+        "type": "video",
+        "orientation": "portrait",
+        "n_frames": 300,
+        "model": "sy_ore",
+        "size": "small",
+        "require_pro": True
+    },
+    "sora2pro-landscape-15s": {
+        "type": "video",
+        "orientation": "landscape",
+        "n_frames": 450,
+        "model": "sy_ore",
+        "size": "small",
+        "require_pro": True
+    },
+    "sora2pro-portrait-15s": {
+        "type": "video",
+        "orientation": "portrait",
+        "n_frames": 450,
+        "model": "sy_ore",
+        "size": "small",
+        "require_pro": True
+    },
+    "sora2pro-landscape-25s": {
+        "type": "video",
+        "orientation": "landscape",
+        "n_frames": 750,
+        "model": "sy_ore",
+        "size": "small",
+        "require_pro": True
+    },
+    "sora2pro-portrait-25s": {
+        "type": "video",
+        "orientation": "portrait",
+        "n_frames": 750,
+        "model": "sy_ore",
+        "size": "small",
+        "require_pro": True
+    },
+    # Pro HD video models (require Pro subscription, high quality)
+    "sora2pro-hd-landscape-10s": {
+        "type": "video",
+        "orientation": "landscape",
+        "n_frames": 300,
+        "model": "sy_ore",
+        "size": "large",
+        "require_pro": True
+    },
+    "sora2pro-hd-portrait-10s": {
+        "type": "video",
+        "orientation": "portrait",
+        "n_frames": 300,
+        "model": "sy_ore",
+        "size": "large",
+        "require_pro": True
+    },
+    "sora2pro-hd-landscape-15s": {
+        "type": "video",
+        "orientation": "landscape",
+        "n_frames": 450,
+        "model": "sy_ore",
+        "size": "large",
+        "require_pro": True
+    },
+    "sora2pro-hd-portrait-15s": {
+        "type": "video",
+        "orientation": "portrait",
+        "n_frames": 450,
+        "model": "sy_ore",
+        "size": "large",
+        "require_pro": True
     }
 }
 
@@ -166,6 +255,27 @@ class GenerationHandler:
 
         return cleaned
 
+    def _extract_style(self, prompt: str) -> tuple[str, Optional[str]]:
+        """Extract style from prompt
+
+        Args:
+            prompt: Original prompt
+
+        Returns:
+            Tuple of (cleaned_prompt, style_id)
+        """
+        # Extract {style} pattern
+        match = re.search(r'\{([^}]+)\}', prompt)
+        if match:
+            style_id = match.group(1).strip()
+            # Remove {style} from prompt
+            cleaned_prompt = re.sub(r'\{[^}]+\}', '', prompt).strip()
+            # Clean up extra whitespace
+            cleaned_prompt = ' '.join(cleaned_prompt.split())
+            debug_logger.log_info(f"Extracted style: '{style_id}' from prompt: '{prompt}'")
+            return cleaned_prompt, style_id
+        return prompt, None
+
     async def _download_file(self, url: str) -> bytes:
         """Download file from URL
 
@@ -222,6 +332,8 @@ class GenerationHandler:
             stream: Whether to stream response
         """
         start_time = time.time()
+        log_id = None  # Initialize log_id to avoid reference before assignment
+        token_obj = None  # Initialize token_obj to avoid reference before assignment
 
         # Validate model
         if model not in MODEL_CONFIG:
@@ -273,10 +385,20 @@ class GenerationHandler:
                     return
 
         # Streaming mode: proceed with actual generation
+        # Check if model requires Pro subscription
+        require_pro = model_config.get("require_pro", False)
+
         # Select token (with lock for image generation, Sora2 quota check for video generation)
-        token_obj = await self.load_balancer.select_token(for_image_generation=is_image, for_video_generation=is_video)
+        # If Pro is required, filter for Pro tokens only
+        token_obj = await self.load_balancer.select_token(
+            for_image_generation=is_image,
+            for_video_generation=is_video,
+            require_pro=require_pro
+        )
         if not token_obj:
-            if is_image:
+            if require_pro:
+                raise Exception("No available Pro tokens. Pro models require a ChatGPT Pro subscription.")
+            elif is_image:
                 raise Exception("No available tokens for image generation. All tokens are either disabled, cooling down, locked, or expired.")
             else:
                 raise Exception("No available tokens for video generation. All tokens are either disabled, cooling down, Sora2 quota exhausted, don't support Sora2, or expired.")
@@ -339,37 +461,50 @@ class GenerationHandler:
                 # Get n_frames from model configuration
                 n_frames = model_config.get("n_frames", 300)  # Default to 300 frames (10s)
 
+                # Extract style from prompt
+                clean_prompt, style_id = self._extract_style(prompt)
+
                 # Check if prompt is in storyboard format
-                if self.sora_client.is_storyboard_prompt(prompt):
+                if self.sora_client.is_storyboard_prompt(clean_prompt):
                     # Storyboard mode
                     if stream:
                         yield self._format_stream_chunk(
                             reasoning_content="Detected storyboard format. Converting to storyboard API format...\n"
                         )
 
-                    formatted_prompt = self.sora_client.format_storyboard_prompt(prompt)
+                    formatted_prompt = self.sora_client.format_storyboard_prompt(clean_prompt)
                     debug_logger.log_info(f"Storyboard mode detected. Formatted prompt: {formatted_prompt}")
 
                     task_id = await self.sora_client.generate_storyboard(
                         formatted_prompt, token_obj.token,
                         orientation=model_config["orientation"],
                         media_id=media_id,
-                        n_frames=n_frames
+                        n_frames=n_frames,
+                        style_id=style_id
                     )
                 else:
                     # Normal video generation
+                    # Get model and size from config (default to sy_8 and small for backward compatibility)
+                    sora_model = model_config.get("model", "sy_8")
+                    video_size = model_config.get("size", "small")
+
                     task_id = await self.sora_client.generate_video(
-                        prompt, token_obj.token,
+                        clean_prompt, token_obj.token,
                         orientation=model_config["orientation"],
                         media_id=media_id,
-                        n_frames=n_frames
+                        n_frames=n_frames,
+                        style_id=style_id,
+                        model=sora_model,
+                        size=video_size,
+                        token_id=token_obj.id
                     )
             else:
                 task_id = await self.sora_client.generate_image(
                     prompt, token_obj.token,
                     width=model_config["width"],
                     height=model_config["height"],
-                    media_id=media_id
+                    media_id=media_id,
+                    token_id=token_obj.id
                 )
             
             # Save task to database
@@ -382,7 +517,18 @@ class GenerationHandler:
                 progress=0.0
             )
             await self.db.create_task(task)
-            
+
+            # Create initial log entry (status_code=-1, duration=-1.0 means in-progress)
+            log_id = await self._log_request(
+                token_obj.id,
+                f"generate_{model_config['type']}",
+                {"model": model, "prompt": prompt, "has_image": image is not None},
+                {},  # Empty response initially
+                -1,  # -1 means in-progress
+                -1.0,  # -1.0 means in-progress
+                task_id=task_id
+            )
+
             # Record usage
             await self.token_manager.record_usage(token_obj.id, is_video=is_video)
             
@@ -404,16 +550,34 @@ class GenerationHandler:
             if is_video and self.concurrency_manager:
                 await self.concurrency_manager.release_video(token_obj.id)
 
-            # Log successful request
+            # Log successful request with complete task info
             duration = time.time() - start_time
-            await self._log_request(
-                token_obj.id,
-                f"generate_{model_config['type']}",
-                {"model": model, "prompt": prompt, "has_image": image is not None},
-                {"task_id": task_id, "status": "success"},
-                200,
-                duration
-            )
+
+            # Get complete task info from database
+            task_info = await self.db.get_task(task_id)
+            response_data = {
+                "task_id": task_id,
+                "status": "success",
+                "prompt": prompt,
+                "model": model
+            }
+
+            # Add result_urls if available
+            if task_info and task_info.result_urls:
+                try:
+                    result_urls = json.loads(task_info.result_urls)
+                    response_data["result_urls"] = result_urls
+                except:
+                    response_data["result_urls"] = task_info.result_urls
+
+            # Update log entry with completion data
+            if log_id:
+                await self.db.update_request_log(
+                    log_id,
+                    response_body=json.dumps(response_data),
+                    status_code=200,
+                    duration=duration
+                )
 
         except Exception as e:
             # Release lock for image generation on error
@@ -427,20 +591,38 @@ class GenerationHandler:
             if is_video and token_obj and self.concurrency_manager:
                 await self.concurrency_manager.release_video(token_obj.id)
 
-            # Record error
+            # Record error (check if it's an overload error)
             if token_obj:
-                await self.token_manager.record_error(token_obj.id)
+                error_str = str(e).lower()
+                is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+                await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
 
-            # Log failed request
+            # Parse error message to check if it's a structured error (JSON)
+            error_response = None
+            try:
+                error_response = json.loads(str(e))
+            except:
+                pass
+
+            # Update log entry with error data
             duration = time.time() - start_time
-            await self._log_request(
-                token_obj.id if token_obj else None,
-                f"generate_{model_config['type'] if model_config else 'unknown'}",
-                {"model": model, "prompt": prompt, "has_image": image is not None},
-                {"error": str(e)},
-                500,
-                duration
-            )
+            if log_id:
+                if error_response:
+                    # Structured error (e.g., unsupported_country_code)
+                    await self.db.update_request_log(
+                        log_id,
+                        response_body=json.dumps(error_response),
+                        status_code=400,
+                        duration=duration
+                    )
+                else:
+                    # Generic error
+                    await self.db.update_request_log(
+                        log_id,
+                        response_body=json.dumps({"error": str(e)}),
+                        status_code=500,
+                        duration=duration
+                    )
             raise e
     
     async def _poll_task_result(self, task_id: str, token: str, is_video: bool,
@@ -496,7 +678,7 @@ class GenerationHandler:
             try:
                 if is_video:
                     # Get pending tasks to check progress
-                    pending_tasks = await self.sora_client.get_pending_tasks(token)
+                    pending_tasks = await self.sora_client.get_pending_tasks(token, token_id=token_id)
 
                     # Find matching task in pending tasks
                     task_found = False
@@ -528,12 +710,57 @@ class GenerationHandler:
                     # If task not found in pending tasks, it's completed - fetch from drafts
                     if not task_found:
                         debug_logger.log_info(f"Task {task_id} not found in pending tasks, fetching from drafts...")
-                        result = await self.sora_client.get_video_drafts(token)
+                        result = await self.sora_client.get_video_drafts(token, token_id=token_id)
                         items = result.get("items", [])
 
                         # Find matching task in drafts
                         for item in items:
                             if item.get("task_id") == task_id:
+                                # Check for content violation
+                                kind = item.get("kind")
+                                reason_str = item.get("reason_str") or item.get("markdown_reason_str")
+                                url = item.get("url") or item.get("downloadable_url")
+                                debug_logger.log_info(f"Found task {task_id} in drafts with kind: {kind}, reason_str: {reason_str}, has_url: {bool(url)}")
+
+                                # Check if content violates policy
+                                # Violation indicators: kind is violation type, or has reason_str, or missing video URL
+                                is_violation = (
+                                    kind == "sora_content_violation" or
+                                    (reason_str and reason_str.strip()) or  # Has non-empty reason
+                                    not url  # No video URL means generation failed
+                                )
+
+                                if is_violation:
+                                    error_message = f"Content policy violation: {reason_str or 'Content violates guardrails'}"
+
+                                    debug_logger.log_error(
+                                        error_message=error_message,
+                                        status_code=400,
+                                        response_text=json.dumps(item)
+                                    )
+
+                                    # Update task status
+                                    await self.db.update_task(task_id, "failed", 0, error_message=error_message)
+
+                                    # Release resources
+                                    if token_id and self.concurrency_manager:
+                                        await self.concurrency_manager.release_video(token_id)
+                                        debug_logger.log_info(f"Released concurrency slot for token {token_id} due to content violation")
+
+                                    # Return error in stream format
+                                    if stream:
+                                        yield self._format_stream_chunk(
+                                            reasoning_content=f"**Content Policy Violation**\n\n{reason_str}\n"
+                                        )
+                                        yield self._format_stream_chunk(
+                                            content=f"❌ 生成失败: {reason_str}",
+                                            finish_reason="STOP"
+                                        )
+                                        yield "data: [DONE]\n\n"
+
+                                    # Stop polling immediately
+                                    return
+
                                 # Check if watermark-free mode is enabled
                                 watermark_free_config = await self.db.get_watermark_free_config()
                                 watermark_free_enabled = watermark_free_config.watermark_free_enabled
@@ -600,7 +827,7 @@ class GenerationHandler:
                                         # Cache watermark-free video (if cache enabled)
                                         if config.cache_enabled:
                                             try:
-                                                cached_filename = await self.file_cache.download_and_cache(watermark_free_url, "video")
+                                                cached_filename = await self.file_cache.download_and_cache(watermark_free_url, "video", token_id=token_id)
                                                 local_url = f"{self._get_base_url()}/tmp/{cached_filename}"
                                                 if stream:
                                                     yield self._format_stream_chunk(
@@ -658,7 +885,7 @@ class GenerationHandler:
                                             raise Exception("Video URL not found")
                                         if config.cache_enabled:
                                             try:
-                                                cached_filename = await self.file_cache.download_and_cache(url, "video")
+                                                cached_filename = await self.file_cache.download_and_cache(url, "video", token_id=token_id)
                                                 local_url = f"{self._get_base_url()}/tmp/{cached_filename}"
                                             except Exception as cache_error:
                                                 local_url = url
@@ -676,7 +903,7 @@ class GenerationHandler:
                                                 )
 
                                             try:
-                                                cached_filename = await self.file_cache.download_and_cache(url, "video")
+                                                cached_filename = await self.file_cache.download_and_cache(url, "video", token_id=token_id)
                                                 local_url = f"{self._get_base_url()}/tmp/{cached_filename}"
                                                 if stream:
                                                     yield self._format_stream_chunk(
@@ -712,7 +939,7 @@ class GenerationHandler:
                                     yield "data: [DONE]\n\n"
                                 return
                 else:
-                    result = await self.sora_client.get_image_tasks(token)
+                    result = await self.sora_client.get_image_tasks(token, token_id=token_id)
                     task_responses = result.get("task_responses", [])
 
                     # Find matching task
@@ -742,7 +969,7 @@ class GenerationHandler:
                                     if config.cache_enabled:
                                         for idx, url in enumerate(urls):
                                             try:
-                                                cached_filename = await self.file_cache.download_and_cache(url, "image")
+                                                cached_filename = await self.file_cache.download_and_cache(url, "image", token_id=token_id)
                                                 local_url = f"{base_url}/tmp/{cached_filename}"
                                                 local_urls.append(local_url)
                                                 if stream and len(urls) > 1:
@@ -938,21 +1165,23 @@ class GenerationHandler:
 
     async def _log_request(self, token_id: Optional[int], operation: str,
                           request_data: Dict[str, Any], response_data: Dict[str, Any],
-                          status_code: int, duration: float):
-        """Log request to database"""
+                          status_code: int, duration: float, task_id: Optional[str] = None) -> Optional[int]:
+        """Log request to database and return log ID"""
         try:
             log = RequestLog(
                 token_id=token_id,
+                task_id=task_id,
                 operation=operation,
                 request_body=json.dumps(request_data),
                 response_body=json.dumps(response_data),
                 status_code=status_code,
                 duration=duration
             )
-            await self.db.log_request(log)
+            return await self.db.log_request(log)
         except Exception as e:
             # Don't fail the request if logging fails
             print(f"Failed to log request: {e}")
+            return None
 
     # ==================== Character Creation and Remix Handlers ====================
 
@@ -973,6 +1202,7 @@ class GenerationHandler:
         if not token_obj:
             raise Exception("No available tokens for character creation")
 
+        start_time = time.time()
         try:
             yield self._format_stream_chunk(
                 reasoning_content="**Character Creation Begins**\n\nInitializing character creation...\n",
@@ -1057,6 +1287,26 @@ class GenerationHandler:
             await self.sora_client.set_character_public(cameo_id, token_obj.token)
             debug_logger.log_info(f"Character set as public")
 
+            # Log successful character creation
+            duration = time.time() - start_time
+            await self._log_request(
+                token_id=token_obj.id,
+                operation="character_only",
+                request_data={
+                    "type": "character_creation",
+                    "has_video": True
+                },
+                response_data={
+                    "success": True,
+                    "username": username,
+                    "display_name": display_name,
+                    "character_id": character_id,
+                    "cameo_id": cameo_id
+                },
+                status_code=200,
+                duration=duration
+            )
+
             # Step 7: Return success message
             yield self._format_stream_chunk(
                 content=f"角色创建成功，角色名@{username}",
@@ -1065,6 +1315,23 @@ class GenerationHandler:
             yield "data: [DONE]\n\n"
 
         except Exception as e:
+            # Log failed character creation
+            duration = time.time() - start_time
+            await self._log_request(
+                token_id=token_obj.id if token_obj else None,
+                operation="character_only",
+                request_data={
+                    "type": "character_creation",
+                    "has_video": True
+                },
+                response_data={
+                    "success": False,
+                    "error": str(e)
+                },
+                status_code=500,
+                duration=duration
+            )
+
             debug_logger.log_error(
                 error_message=f"Character creation failed: {str(e)}",
                 status_code=500,
@@ -1091,6 +1358,10 @@ class GenerationHandler:
             raise Exception("No available tokens for video generation")
 
         character_id = None
+        start_time = time.time()
+        username = None
+        display_name = None
+        cameo_id = None
         try:
             yield self._format_stream_chunk(
                 reasoning_content="**Character Creation and Video Generation Begins**\n\nInitializing...\n",
@@ -1168,6 +1439,28 @@ class GenerationHandler:
             )
             debug_logger.log_info(f"Character finalized, character_id: {character_id}")
 
+            # Log successful character creation (before video generation)
+            character_creation_duration = time.time() - start_time
+            await self._log_request(
+                token_id=token_obj.id,
+                operation="character_with_video",
+                request_data={
+                    "type": "character_creation_with_video",
+                    "has_video": True,
+                    "prompt": prompt
+                },
+                response_data={
+                    "success": True,
+                    "username": username,
+                    "display_name": display_name,
+                    "character_id": character_id,
+                    "cameo_id": cameo_id,
+                    "stage": "character_created"
+                },
+                status_code=200,
+                duration=character_creation_duration
+            )
+
             # Step 6: Generate video with character
             yield self._format_stream_chunk(
                 reasoning_content="**Video Generation Process Begins**\n\nGenerating video with character...\n"
@@ -1180,10 +1473,17 @@ class GenerationHandler:
             # Get n_frames from model configuration
             n_frames = model_config.get("n_frames", 300)  # Default to 300 frames (10s)
 
+            # Get model and size from config (default to sy_8 and small for backward compatibility)
+            sora_model = model_config.get("model", "sy_8")
+            video_size = model_config.get("size", "small")
+
             task_id = await self.sora_client.generate_video(
                 full_prompt, token_obj.token,
                 orientation=model_config["orientation"],
-                n_frames=n_frames
+                n_frames=n_frames,
+                model=sora_model,
+                size=video_size,
+                token_id=token_obj.id
             )
             debug_logger.log_info(f"Video generation started, task_id: {task_id}")
 
@@ -1191,7 +1491,7 @@ class GenerationHandler:
             task = Task(
                 task_id=task_id,
                 token_id=token_obj.id,
-                model=f"sora-video-{model_config['orientation']}",
+                model=f"sora2-video-{model_config['orientation']}",
                 prompt=full_prompt,
                 status="processing",
                 progress=0.0
@@ -1209,9 +1509,33 @@ class GenerationHandler:
             await self.token_manager.record_success(token_obj.id, is_video=True)
 
         except Exception as e:
-            # Record error
+            # Log failed character creation
+            duration = time.time() - start_time
+            await self._log_request(
+                token_id=token_obj.id if token_obj else None,
+                operation="character_with_video",
+                request_data={
+                    "type": "character_creation_with_video",
+                    "has_video": True,
+                    "prompt": prompt
+                },
+                response_data={
+                    "success": False,
+                    "username": username,
+                    "display_name": display_name,
+                    "character_id": character_id,
+                    "cameo_id": cameo_id,
+                    "error": str(e)
+                },
+                status_code=500,
+                duration=duration
+            )
+
+            # Record error (check if it's an overload error)
             if token_obj:
-                await self.token_manager.record_error(token_obj.id)
+                error_str = str(e).lower()
+                is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+                await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
             debug_logger.log_error(
                 error_message=f"Character and video generation failed: {str(e)}",
                 status_code=500,
@@ -1258,6 +1582,9 @@ class GenerationHandler:
             # Clean remix link from prompt to avoid duplication
             clean_prompt = self._clean_remix_link_from_prompt(prompt)
 
+            # Extract style from prompt
+            clean_prompt, style_id = self._extract_style(clean_prompt)
+
             # Get n_frames from model configuration
             n_frames = model_config.get("n_frames", 300)  # Default to 300 frames (10s)
 
@@ -1270,7 +1597,8 @@ class GenerationHandler:
                 prompt=clean_prompt,
                 token=token_obj.token,
                 orientation=model_config["orientation"],
-                n_frames=n_frames
+                n_frames=n_frames,
+                style_id=style_id
             )
             debug_logger.log_info(f"Remix generation started, task_id: {task_id}")
 
@@ -1278,7 +1606,7 @@ class GenerationHandler:
             task = Task(
                 task_id=task_id,
                 token_id=token_obj.id,
-                model=f"sora-video-{model_config['orientation']}",
+                model=f"sora2-video-{model_config['orientation']}",
                 prompt=f"remix:{remix_target_id} {clean_prompt}",
                 status="processing",
                 progress=0.0
@@ -1296,9 +1624,11 @@ class GenerationHandler:
             await self.token_manager.record_success(token_obj.id, is_video=True)
 
         except Exception as e:
-            # Record error
+            # Record error (check if it's an overload error)
             if token_obj:
-                await self.token_manager.record_error(token_obj.id)
+                error_str = str(e).lower()
+                is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+                await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
             debug_logger.log_error(
                 error_message=f"Remix generation failed: {str(e)}",
                 status_code=500,
@@ -1340,6 +1670,16 @@ class GenerationHandler:
 
                 debug_logger.log_info(f"Cameo status: {current_status} (message: {status_message}) (attempt {attempt + 1}/{max_attempts})")
 
+                # Check if processing failed
+                if current_status == "failed":
+                    error_message = status_message or "Character creation failed"
+                    debug_logger.log_error(
+                        error_message=f"Cameo processing failed: {error_message}",
+                        status_code=500,
+                        response_text=error_message
+                    )
+                    raise Exception(f"角色创建失败: {error_message}")
+
                 # Check if processing is complete
                 # Primary condition: status_message == "Completed" means processing is done
                 if status_message == "Completed":
@@ -1354,6 +1694,11 @@ class GenerationHandler:
             except Exception as e:
                 consecutive_errors += 1
                 error_msg = str(e)
+
+                # Check if it's a character creation failure (not a network error)
+                # These should be raised immediately, not retried
+                if "角色创建失败" in error_msg:
+                    raise
 
                 # Log error with context
                 debug_logger.log_error(
