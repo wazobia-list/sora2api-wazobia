@@ -154,6 +154,52 @@ MODEL_CONFIG = {
         "model": "sy_ore",
         "size": "large",
         "require_pro": True
+    },
+    # Prompt enhancement models
+    "prompt-enhance-short-10s": {
+        "type": "prompt_enhance",
+        "expansion_level": "short",
+        "duration_s": 10
+    },
+    "prompt-enhance-short-15s": {
+        "type": "prompt_enhance",
+        "expansion_level": "short",
+        "duration_s": 15
+    },
+    "prompt-enhance-short-20s": {
+        "type": "prompt_enhance",
+        "expansion_level": "short",
+        "duration_s": 20
+    },
+    "prompt-enhance-medium-10s": {
+        "type": "prompt_enhance",
+        "expansion_level": "medium",
+        "duration_s": 10
+    },
+    "prompt-enhance-medium-15s": {
+        "type": "prompt_enhance",
+        "expansion_level": "medium",
+        "duration_s": 15
+    },
+    "prompt-enhance-medium-20s": {
+        "type": "prompt_enhance",
+        "expansion_level": "medium",
+        "duration_s": 20
+    },
+    "prompt-enhance-long-10s": {
+        "type": "prompt_enhance",
+        "expansion_level": "long",
+        "duration_s": 10
+    },
+    "prompt-enhance-long-15s": {
+        "type": "prompt_enhance",
+        "expansion_level": "long",
+        "duration_s": 15
+    },
+    "prompt-enhance-long-20s": {
+        "type": "prompt_enhance",
+        "expansion_level": "long",
+        "duration_s": 20
     }
 }
 
@@ -264,16 +310,30 @@ class GenerationHandler:
         Returns:
             Tuple of (cleaned_prompt, style_id)
         """
+        # Valid style IDs
+        VALID_STYLES = {
+            "festive", "kakalaka", "news", "selfie", "handheld",
+            "golden", "anime", "retro", "nostalgic", "comic"
+        }
+
         # Extract {style} pattern
         match = re.search(r'\{([^}]+)\}', prompt)
         if match:
-            style_id = match.group(1).strip()
-            # Remove {style} from prompt
-            cleaned_prompt = re.sub(r'\{[^}]+\}', '', prompt).strip()
-            # Clean up extra whitespace
-            cleaned_prompt = ' '.join(cleaned_prompt.split())
-            debug_logger.log_info(f"Extracted style: '{style_id}' from prompt: '{prompt}'")
-            return cleaned_prompt, style_id
+            style_candidate = match.group(1).strip()
+
+            # Check if it's a single word (no spaces) and in valid styles list
+            if ' ' not in style_candidate and style_candidate.lower() in VALID_STYLES:
+                # Valid style found - remove {style} from prompt
+                cleaned_prompt = re.sub(r'\{[^}]+\}', '', prompt).strip()
+                # Clean up extra whitespace
+                cleaned_prompt = ' '.join(cleaned_prompt.split())
+                debug_logger.log_info(f"Extracted style: '{style_candidate}' from prompt: '{prompt}'")
+                return cleaned_prompt, style_candidate.lower()
+            else:
+                # Not a valid style - treat as normal prompt
+                debug_logger.log_info(f"'{style_candidate}' is not a valid style (contains spaces or not in style list), treating as normal prompt")
+                return prompt, None
+
         return prompt, None
 
     async def _download_file(self, url: str) -> bytes:
@@ -342,6 +402,13 @@ class GenerationHandler:
         model_config = MODEL_CONFIG[model]
         is_video = model_config["type"] == "video"
         is_image = model_config["type"] == "image"
+        is_prompt_enhance = model_config["type"] == "prompt_enhance"
+
+        # Handle prompt enhancement
+        if is_prompt_enhance:
+            async for chunk in self._handle_prompt_enhance(prompt, model_config, stream):
+                yield chunk
+            return
 
         # Non-streaming mode: only check availability
         if not stream:
@@ -424,8 +491,21 @@ class GenerationHandler:
 
         task_id = None
         is_first_chunk = True  # Track if this is the first chunk
+        log_id = None  # Initialize log_id
 
         try:
+            # Create initial log entry BEFORE submitting task to upstream
+            # This ensures the log is created even if upstream fails
+            log_id = await self._log_request(
+                token_obj.id,
+                f"generate_{model_config['type']}",
+                {"model": model, "prompt": prompt, "has_image": image is not None},
+                {},  # Empty response initially
+                -1,  # -1 means in-progress
+                -1.0,  # -1.0 means in-progress
+                task_id=None  # Will be updated after task submission
+            )
+
             # Upload image if provided
             media_id = None
             if image:
@@ -506,7 +586,7 @@ class GenerationHandler:
                     media_id=media_id,
                     token_id=token_obj.id
                 )
-            
+
             # Save task to database
             task = Task(
                 task_id=task_id,
@@ -518,22 +598,15 @@ class GenerationHandler:
             )
             await self.db.create_task(task)
 
-            # Create initial log entry (status_code=-1, duration=-1.0 means in-progress)
-            log_id = await self._log_request(
-                token_obj.id,
-                f"generate_{model_config['type']}",
-                {"model": model, "prompt": prompt, "has_image": image is not None},
-                {},  # Empty response initially
-                -1,  # -1 means in-progress
-                -1.0,  # -1.0 means in-progress
-                task_id=task_id
-            )
+            # Update log entry with task_id now that we have it
+            if log_id:
+                await self.db.update_request_log_task_id(log_id, task_id)
 
             # Record usage
             await self.token_manager.record_usage(token_obj.id, is_video=is_video)
             
             # Poll for results with timeout
-            async for chunk in self._poll_task_result(task_id, token_obj.token, is_video, stream, prompt, token_obj.id):
+            async for chunk in self._poll_task_result(task_id, token_obj.token, is_video, stream, prompt, token_obj.id, log_id, start_time):
                 yield chunk
             
             # Record success
@@ -591,12 +664,6 @@ class GenerationHandler:
             if is_video and token_obj and self.concurrency_manager:
                 await self.concurrency_manager.release_video(token_obj.id)
 
-            # Record error (check if it's an overload error)
-            if token_obj:
-                error_str = str(e).lower()
-                is_overload = "heavy_load" in error_str or "under heavy load" in error_str
-                await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
-
             # Parse error message to check if it's a structured error (JSON)
             error_response = None
             try:
@@ -604,15 +671,31 @@ class GenerationHandler:
             except:
                 pass
 
+            # Check for CF shield/429 error
+            is_cf_or_429 = False
+            if error_response and isinstance(error_response, dict):
+                error_info = error_response.get("error", {})
+                if error_info.get("code") == "cf_shield_429":
+                    is_cf_or_429 = True
+
+            # Record error (check if it's an overload error or CF/429 error)
+            if token_obj:
+                error_str = str(e).lower()
+                is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+                # Don't record error for CF shield/429 (not token's fault)
+                if not is_cf_or_429:
+                    await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+
             # Update log entry with error data
             duration = time.time() - start_time
             if log_id:
                 if error_response:
-                    # Structured error (e.g., unsupported_country_code)
+                    # Structured error (e.g., unsupported_country_code, cf_shield_429)
+                    status_code = 429 if is_cf_or_429 else 400
                     await self.db.update_request_log(
                         log_id,
                         response_body=json.dumps(error_response),
-                        status_code=400,
+                        status_code=status_code,
                         duration=duration
                     )
                 else:
@@ -626,7 +709,8 @@ class GenerationHandler:
             raise e
     
     async def _poll_task_result(self, task_id: str, token: str, is_video: bool,
-                                stream: bool, prompt: str, token_id: int = None) -> AsyncGenerator[str, None]:
+                                stream: bool, prompt: str, token_id: int = None,
+                                log_id: int = None, start_time: float = None) -> AsyncGenerator[str, None]:
         """Poll for task result with timeout"""
         # Get timeout from config
         timeout = config.video_timeout if is_video else config.image_timeout
@@ -669,7 +753,19 @@ class GenerationHandler:
                     await self.concurrency_manager.release_video(token_id)
                     debug_logger.log_info(f"Released concurrency slot for token {token_id} due to timeout")
 
+                # Update task status to failed
                 await self.db.update_task(task_id, "failed", 0, error_message=f"Generation timeout after {elapsed_time:.1f} seconds")
+
+                # Update request log with timeout error
+                if log_id and start_time:
+                    duration = time.time() - start_time
+                    await self.db.update_request_log(
+                        log_id,
+                        response_body=json.dumps({"error": f"Generation timeout after {elapsed_time:.1f} seconds"}),
+                        status_code=408,
+                        duration=duration
+                    )
+
                 raise Exception(f"Upstream API timeout: Generation exceeded {timeout} seconds limit")
 
 
@@ -696,6 +792,9 @@ class GenerationHandler:
                             # Update last_progress for tracking
                             last_progress = progress_pct
                             status = task.get("status", "processing")
+
+                            # Update database with current progress
+                            await self.db.update_task(task_id, "processing", progress_pct)
 
                             # Output status every 30 seconds (not just when progress changes)
                             current_time = time.time()
@@ -1057,6 +1156,61 @@ class GenerationHandler:
                         )
             
             except Exception as e:
+                # Check for CF shield/429 error - don't retry these
+                error_str = str(e)
+                is_cf_or_429 = False
+                try:
+                    error_response = json.loads(error_str)
+                    if isinstance(error_response, dict):
+                        error_info = error_response.get("error", {})
+                        if error_info.get("code") == "cf_shield_429":
+                            is_cf_or_429 = True
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+                # CF shield/429 detected - fail immediately
+                if is_cf_or_429:
+                    debug_logger.log_error(
+                        error_message="CF Shield/429 detected during polling, failing task immediately",
+                        status_code=429,
+                        response_text=error_str
+                    )
+                    # Update task status to failed
+                    await self.db.update_task(task_id, "failed", 0, error_message="Cloudflare challenge or rate limit (429) triggered")
+
+                    # Update request log with CF/429 error
+                    if log_id and start_time:
+                        duration = time.time() - start_time
+                        await self.db.update_request_log(
+                            log_id,
+                            response_body=json.dumps({"error": "Cloudflare challenge or rate limit (429) triggered"}),
+                            status_code=429,
+                            duration=duration
+                        )
+
+                    # Release resources
+                    if not is_video and token_id:
+                        await self.load_balancer.token_lock.release_lock(token_id)
+                        if self.concurrency_manager:
+                            await self.concurrency_manager.release_image(token_id)
+                    if is_video and token_id and self.concurrency_manager:
+                        await self.concurrency_manager.release_video(token_id)
+
+                    # Send error message to client if streaming
+                    if stream:
+                        yield self._format_stream_chunk(
+                            reasoning_content="**CF Shield/429 Error**\\n\\nCloudflare challenge or rate limit (429) triggered\\n"
+                        )
+                        yield self._format_stream_chunk(
+                            content="❌ Generation failed: Cloudflare challenge or rate limit (429) triggered. Please change proxy or reduce request frequency.",
+                            finish_reason="STOP"
+                        )
+                        yield "data: [DONE]\\n\\n"
+
+                    # Exit polling immediately
+                    return
+
+                # For other errors, retry if not last attempt
                 if attempt >= max_attempts - 1:
                     raise e
                 continue
@@ -1182,6 +1336,60 @@ class GenerationHandler:
             # Don't fail the request if logging fails
             print(f"Failed to log request: {e}")
             return None
+
+    # ==================== Prompt Enhancement Handler ====================
+
+    async def _handle_prompt_enhance(self, prompt: str, model_config: Dict, stream: bool) -> AsyncGenerator[str, None]:
+        """Handle prompt enhancement request
+
+        Args:
+            prompt: Original prompt to enhance
+            model_config: Model configuration
+            stream: Whether to stream response
+        """
+        expansion_level = model_config["expansion_level"]
+        duration_s = model_config["duration_s"]
+
+        # Select token
+        token_obj = await self.load_balancer.select_token(for_video_generation=True)
+        if not token_obj:
+            error_msg = "No available tokens for prompt enhancement"
+            if stream:
+                yield self._format_stream_chunk(reasoning_content=f"**Error:** {error_msg}", is_first=True)
+                yield self._format_stream_chunk(finish_reason="STOP")
+            else:
+                yield self._format_non_stream_response(error_msg)
+            return
+
+        try:
+            # Call enhance_prompt API
+            enhanced_prompt = await self.sora_client.enhance_prompt(
+                prompt=prompt,
+                token=token_obj.token,
+                expansion_level=expansion_level,
+                duration_s=duration_s,
+                token_id=token_obj.id
+            )
+
+            if stream:
+                # Stream response
+                yield self._format_stream_chunk(
+                    content=enhanced_prompt,
+                    is_first=True
+                )
+                yield self._format_stream_chunk(finish_reason="STOP")
+            else:
+                # Non-stream response
+                yield self._format_non_stream_response(enhanced_prompt)
+
+        except Exception as e:
+            error_msg = f"Prompt enhancement failed: {str(e)}"
+            debug_logger.log_error(error_msg)
+            if stream:
+                yield self._format_stream_chunk(content=f"Error: {error_msg}", is_first=True)
+                yield self._format_stream_chunk(finish_reason="STOP")
+            else:
+                yield self._format_non_stream_response(error_msg)
 
     # ==================== Character Creation and Remix Handlers ====================
 
@@ -1315,6 +1523,20 @@ class GenerationHandler:
             yield "data: [DONE]\n\n"
 
         except Exception as e:
+            # Parse error to check for CF shield/429
+            error_response = None
+            try:
+                error_response = json.loads(str(e))
+            except:
+                pass
+
+            # Check for CF shield/429 error
+            is_cf_or_429 = False
+            if error_response and isinstance(error_response, dict):
+                error_info = error_response.get("error", {})
+                if error_info.get("code") == "cf_shield_429":
+                    is_cf_or_429 = True
+
             # Log failed character creation
             duration = time.time() - start_time
             await self._log_request(
@@ -1328,13 +1550,21 @@ class GenerationHandler:
                     "success": False,
                     "error": str(e)
                 },
-                status_code=500,
+                status_code=429 if is_cf_or_429 else 500,
                 duration=duration
             )
 
+            # Record error (check if it's an overload error or CF/429 error)
+            if token_obj:
+                error_str = str(e).lower()
+                is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+                # Don't record error for CF shield/429 (not token's fault)
+                if not is_cf_or_429:
+                    await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+
             debug_logger.log_error(
                 error_message=f"Character creation failed: {str(e)}",
-                status_code=500,
+                status_code=429 if is_cf_or_429 else 500,
                 response_text=str(e)
             )
             raise
@@ -1531,14 +1761,30 @@ class GenerationHandler:
                 duration=duration
             )
 
-            # Record error (check if it's an overload error)
+            # Parse error to check for CF shield/429
+            error_response = None
+            try:
+                error_response = json.loads(str(e))
+            except:
+                pass
+
+            # Check for CF shield/429 error
+            is_cf_or_429 = False
+            if error_response and isinstance(error_response, dict):
+                error_info = error_response.get("error", {})
+                if error_info.get("code") == "cf_shield_429":
+                    is_cf_or_429 = True
+
+            # Record error (check if it's an overload error or CF/429 error)
             if token_obj:
                 error_str = str(e).lower()
                 is_overload = "heavy_load" in error_str or "under heavy load" in error_str
-                await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+                # Don't record error for CF shield/429 (not token's fault)
+                if not is_cf_or_429:
+                    await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
             debug_logger.log_error(
                 error_message=f"Character and video generation failed: {str(e)}",
-                status_code=500,
+                status_code=429 if is_cf_or_429 else 500,
                 response_text=str(e)
             )
             raise
@@ -1624,14 +1870,30 @@ class GenerationHandler:
             await self.token_manager.record_success(token_obj.id, is_video=True)
 
         except Exception as e:
-            # Record error (check if it's an overload error)
+            # Parse error to check for CF shield/429
+            error_response = None
+            try:
+                error_response = json.loads(str(e))
+            except:
+                pass
+
+            # Check for CF shield/429 error
+            is_cf_or_429 = False
+            if error_response and isinstance(error_response, dict):
+                error_info = error_response.get("error", {})
+                if error_info.get("code") == "cf_shield_429":
+                    is_cf_or_429 = True
+
+            # Record error (check if it's an overload error or CF/429 error)
             if token_obj:
                 error_str = str(e).lower()
                 is_overload = "heavy_load" in error_str or "under heavy load" in error_str
-                await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+                # Don't record error for CF shield/429 (not token's fault)
+                if not is_cf_or_429:
+                    await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
             debug_logger.log_error(
                 error_message=f"Remix generation failed: {str(e)}",
-                status_code=500,
+                status_code=429 if is_cf_or_429 else 500,
                 response_text=str(e)
             )
             raise

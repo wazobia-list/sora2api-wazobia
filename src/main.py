@@ -5,6 +5,9 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from datetime import datetime
 
 # Import modules
 from .core.config import config
@@ -17,6 +20,9 @@ from .services.generation_handler import GenerationHandler
 from .services.concurrency_manager import ConcurrencyManager
 from .api import routes as api_routes
 from .api import admin as admin_routes
+
+# Initialize scheduler (uses system local timezone by default)
+scheduler = AsyncIOScheduler()
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -45,7 +51,7 @@ generation_handler = GenerationHandler(sora_client, token_manager, load_balancer
 
 # Set dependencies for route modules
 api_routes.set_generation_handler(generation_handler)
-admin_routes.set_dependencies(token_manager, proxy_manager, db, generation_handler, concurrency_manager)
+admin_routes.set_dependencies(token_manager, proxy_manager, db, generation_handler, concurrency_manager, scheduler)
 
 # Include routers
 app.include_router(api_routes.router)
@@ -141,10 +147,26 @@ async def startup_event():
     # Start file cache cleanup task
     await generation_handler.file_cache.start_cleanup_task()
 
+    # Start token refresh scheduler if enabled
+    if token_refresh_config.at_auto_refresh_enabled:
+        scheduler.add_job(
+            token_manager.batch_refresh_all_tokens,
+            CronTrigger(hour=0, minute=0),  # Every day at 00:00 (system local timezone)
+            id='batch_refresh_tokens',
+            name='Batch refresh all tokens',
+            replace_existing=True
+        )
+        scheduler.start()
+        print("✓ Token auto-refresh scheduler started (daily at 00:00)")
+    else:
+        print("⊘ Token auto-refresh is disabled")
+
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
     await generation_handler.file_cache.stop_cleanup_task()
+    if scheduler.running:
+        scheduler.shutdown()
 
 if __name__ == "__main__":
     uvicorn.run(
