@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # IMPORTANT: install browsers into /ms-playwright
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN python -m playwright install chromium --with-deps
+RUN python -m playwright install chromium 
 
 COPY . .
 
