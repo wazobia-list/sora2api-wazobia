@@ -413,7 +413,7 @@ class SoraClient:
         )
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
             context = await browser.new_context(user_agent=user_agent)
             page = await context.new_page()
             try:
@@ -867,6 +867,7 @@ class SoraClient:
                 or "challenge-platform" in err
                 or "cloudflare" in err.lower()
                 or "HTTP Error: 400" in err
+                or "HTTP Error: 403" in err
                 or "Unable to process request" in err
             ):
                 result = await self._nf_create_browser(token, json_data, sentinel_token)
