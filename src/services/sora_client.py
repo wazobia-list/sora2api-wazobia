@@ -226,7 +226,8 @@ class SoraClient:
             debug_logger.log_error(
                 error_message=f"nf/create request failed: {str(e)}",
                 status_code=0,
-                response_text=str(e)
+                response_text=str(e),
+                source="Server"
             )
             raise
 
@@ -259,7 +260,8 @@ class SoraClient:
             debug_logger.log_error(
                 error_message=f"Sentinel request failed: {str(e)}",
                 status_code=0,
-                response_text=str(e)
+                response_text=str(e),
+                source="Server"
             )
             raise
 
@@ -386,7 +388,8 @@ class SoraClient:
                 headers=headers,
                 body=json_data,
                 files=multipart,
-                proxy=proxy_url
+                proxy=proxy_url,
+                source="Server"
             )
 
             # Record start time
@@ -414,7 +417,8 @@ class SoraClient:
                 status_code=response.status_code,
                 headers=dict(response.headers),
                 body=response_json if response_json else response.text,
-                duration_ms=duration_ms
+                duration_ms=duration_ms,
+                source="Server"
             )
 
             # Check status
@@ -436,7 +440,8 @@ class SoraClient:
                         debug_logger.log_error(
                             error_message=f"Unsupported country: {error_msg}",
                             status_code=response.status_code,
-                            response_text=error_msg
+                            response_text=error_msg,
+                            source="Server"
                         )
                         # Raise exception with structured error data
                         raise Exception(error_msg)
@@ -446,7 +451,8 @@ class SoraClient:
                 debug_logger.log_error(
                     error_message=error_msg,
                     status_code=response.status_code,
-                    response_text=response.text
+                    response_text=response.text,
+                    source="Server"
                 )
                 raise Exception(error_msg)
 
@@ -654,7 +660,8 @@ class SoraClient:
                 status_code=response.status_code,
                 headers=dict(response.headers),
                 body=response.text if response.text else "No content",
-                duration_ms=duration_ms
+                duration_ms=duration_ms,
+                source="Server"
             )
 
             # Check status (DELETE typically returns 204 No Content or 200 OK)
@@ -663,7 +670,8 @@ class SoraClient:
                 debug_logger.log_error(
                     error_message=error_msg,
                     status_code=response.status_code,
-                    response_text=response.text
+                    response_text=response.text,
+                    source="Server"
                 )
                 raise Exception(error_msg)
 
@@ -719,7 +727,8 @@ class SoraClient:
                     status_code=response.status_code,
                     headers=dict(response.headers),
                     body=response.text if response.text else "No content",
-                    duration_ms=duration_ms
+                    duration_ms=duration_ms,
+                    source="Server"
                 )
 
                 # Check status
@@ -728,7 +737,8 @@ class SoraClient:
                     debug_logger.log_error(
                         error_message=error_msg,
                         status_code=response.status_code,
-                        response_text=response.text
+                        response_text=response.text,
+                        source="Server"
                     )
                     raise Exception(error_msg)
 
@@ -741,7 +751,8 @@ class SoraClient:
                     debug_logger.log_error(
                         error_message=error_msg,
                         status_code=401,
-                        response_text=str(result)
+                        response_text=str(result),
+                        source="Server"
                     )
                     raise Exception(error_msg)
 
@@ -757,7 +768,8 @@ class SoraClient:
             debug_logger.log_error(
                 error_message=f"Custom parse request failed: {str(e)}",
                 status_code=500,
-                response_text=str(e)
+                response_text=str(e),
+                source="Server"
             )
             raise
 
