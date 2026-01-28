@@ -9,6 +9,7 @@ timeout = 120
 max_retries = 3
 poll_interval = 2.5
 max_poll_attempts = 600
+use_urllib_nf_create = false
 
 [server]
 host = "0.0.0.0"
@@ -59,4 +60,3 @@ call_mode = "default"
 # 可选值：-12 到 +14 的整数
 # 常用时区：中国/新加坡 +8, 日本/韩国 +9, 印度 +5.5, 伦敦 0, 纽约 -5, 洛杉矶 -8
 timezone_offset = 8
-
