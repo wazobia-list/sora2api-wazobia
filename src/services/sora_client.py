@@ -87,9 +87,17 @@ class SoraClient:
     async def _get_session(self, token_id: int) -> AsyncSession:
         if token_id not in self._sessions:
             self._sessions[token_id] = AsyncSession()
-            self._ua_by_token[token_id] = random.choice(MOBILE_USER_AGENTS)
+            self._ua_by_token[token_id] = random.choice(DESKTOP_USER_AGENTS)
             self._proxy_by_token[token_id] = await self.proxy_manager.get_proxy_url(token_id)
         return self._sessions[token_id]
+
+    async def close(self) -> None:
+        for session in self._sessions.values():
+            try:
+                await session.aclose()
+            except Exception:
+                pass
+        self._sessions.clear()
 
     @staticmethod
     def _get_pow_parse_time() -> str:
@@ -245,14 +253,18 @@ class SoraClient:
         self,
         token: Optional[str] = None,
         user_agent: Optional[str] = None,
+        token_id: Optional[int] = None,
     ) -> str:
         """Generate openai-sentinel-token by calling /backend-api/sentinel/req and solving PoW"""
         req_id = str(uuid4())
+        token_key = token_id or 0
+        session = await self._get_session(token_key)
+
         if not user_agent:
-            user_agent = random.choice(MOBILE_USER_AGENTS)
+            user_agent = self._ua_by_token.get(token_key) or random.choice(MOBILE_USER_AGENTS)
         pow_token = self._get_pow_token(user_agent)
 
-        proxy_url = await self.proxy_manager.get_proxy_url()
+        proxy_url = self._proxy_by_token.get(token_key) or await self.proxy_manager.get_proxy_url(token_id)
 
         # Request sentinel/req endpoint
         url = f"{self.CHATGPT_BASE_URL}/backend-api/sentinel/req"
@@ -267,22 +279,19 @@ class SoraClient:
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        try:
-            resp = await asyncio.to_thread(
-                self._post_json_sync, url, headers, payload, 10, proxy_url
-            )
-        except Exception as e:
-            debug_logger.log_error(
-                error_message=f"Sentinel request failed: {str(e)}",
-                status_code=0,
-                response_text=str(e),
-                source="Server"
-            )
-            raise
+        kwargs = {"headers": headers, "timeout": 10}
+        if proxy_url:
+            kwargs["proxy"] = proxy_url
+
+        resp = await session.post(url, json=payload, **kwargs)
+
+        if resp.status_code not in (200, 201):
+            raise Exception(f"Sentinel request failed: {resp.status_code} - {resp.text}")
 
         # Build final sentinel token
+        resp_json = resp.json()
         sentinel_token = self._build_sentinel_token(
-            self.SENTINEL_FLOW, req_id, pow_token, resp, user_agent
+            self.SENTINEL_FLOW, req_id, pow_token, resp_json, user_agent
         )
         return sentinel_token
 
@@ -381,6 +390,7 @@ class SoraClient:
             headers["openai-sentinel-token"] = await self._generate_sentinel_token(
                 token,
                 user_agent=user_agent,
+                token_id=token_id,
             )
 
         if not multipart:
@@ -579,10 +589,13 @@ class SoraClient:
             "style_id": style_id
         }
 
+        # Warmup call to set baseline cookies in the session
+        await self._make_request("GET", "/", token, token_id=token_id)
+
         # 生成请求需要添加 sentinel token
         if config.sora_use_urllib_nf_create:
             proxy_url = await self.proxy_manager.get_proxy_url(token_id)
-            sentinel_token = await self._generate_sentinel_token(token)
+            sentinel_token = await self._generate_sentinel_token(token, token_id=token_id)
             result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id)
         else:
             result = await self._make_request(
