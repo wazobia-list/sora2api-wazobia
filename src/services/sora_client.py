@@ -353,7 +353,9 @@ class SoraClient:
 
         headers = {
             "Authorization": f"Bearer {token}",
-            "User-Agent" : "Sora/1.2026.007 (Android 15; 24122RKC7C; build 2600700)"
+            "User-Agent" : "Sora/1.2026.007 (Android 15; 24122RKC7C; build 2600700)",
+            "Origin": "https://sora.chatgpt.com",
+            "Referer": "https://sora.chatgpt.com/",
         }
 
         # 只在生成请求时添加 sentinel token
@@ -558,9 +560,19 @@ class SoraClient:
         }
 
         # 生成请求需要添加 sentinel token
-        proxy_url = await self.proxy_manager.get_proxy_url(token_id)
-        sentinel_token = await self._generate_sentinel_token(token)
-        result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id)
+        if config.sora_use_urllib_nf_create:
+            proxy_url = await self.proxy_manager.get_proxy_url(token_id)
+            sentinel_token = await self._generate_sentinel_token(token)
+            result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id)
+        else:
+            result = await self._make_request(
+                "POST",
+                "/nf/create",
+                token,
+                json_data=json_data,
+                add_sentinel_token=True,
+                token_id=token_id,
+            )
         return result["id"]
     
     async def get_image_tasks(self, token: str, limit: int = 20, token_id: Optional[int] = None) -> Dict[str, Any]:
@@ -968,9 +980,18 @@ class SoraClient:
         }
 
         # Generate sentinel token and call /nf/create using urllib
-        proxy_url = await self.proxy_manager.get_proxy_url()
-        sentinel_token = await self._generate_sentinel_token(token)
-        result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url)
+        if config.sora_use_urllib_nf_create:
+            proxy_url = await self.proxy_manager.get_proxy_url()
+            sentinel_token = await self._generate_sentinel_token(token)
+            result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url)
+        else:
+            result = await self._make_request(
+                "POST",
+                "/nf/create",
+                token,
+                json_data=json_data,
+                add_sentinel_token=True,
+            )
         return result.get("id")
 
     async def generate_storyboard(self, prompt: str, token: str, orientation: str = "landscape",

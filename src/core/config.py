@@ -1,4 +1,5 @@
 """Configuration management"""
+import os
 import tomli
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -44,6 +45,13 @@ class Config:
     @property
     def sora_base_url(self) -> str:
         return self._config["sora"]["base_url"]
+
+    @property
+    def sora_use_urllib_nf_create(self) -> bool:
+        env_value = os.getenv("USE_URLLIB_NF_CREATE")
+        if env_value is not None:
+            return env_value.strip().lower() in {"1", "true", "yes", "on"}
+        return self._config.get("sora", {}).get("use_urllib_nf_create", False)
     
     @property
     def sora_timeout(self) -> int:
