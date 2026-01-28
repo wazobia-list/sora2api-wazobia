@@ -204,6 +204,26 @@ class Database:
                 VALUES (1, ?, ?)
             """, (call_mode, polling_mode_enabled))
 
+        # Ensure pow_proxy_config has a row
+        cursor = await db.execute("SELECT COUNT(*) FROM pow_proxy_config")
+        count = await cursor.fetchone()
+        if count[0] == 0:
+            # Get POW proxy config from config_dict if provided, otherwise use defaults
+            pow_proxy_enabled = False
+            pow_proxy_url = None
+
+            if config_dict:
+                pow_proxy_config = config_dict.get("pow_proxy", {})
+                pow_proxy_enabled = pow_proxy_config.get("pow_proxy_enabled", False)
+                pow_proxy_url = pow_proxy_config.get("pow_proxy_url", "")
+                # Convert empty string to None
+                pow_proxy_url = pow_proxy_url if pow_proxy_url else None
+
+            await db.execute("""
+                INSERT INTO pow_proxy_config (id, pow_proxy_enabled, pow_proxy_url)
+                VALUES (1, ?, ?)
+            """, (pow_proxy_enabled, pow_proxy_url))
+
 
     async def check_and_migrate_db(self, config_dict: dict = None):
         """Check database integrity and perform migrations if needed
@@ -481,6 +501,17 @@ class Database:
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     call_mode TEXT DEFAULT 'default',
                     polling_mode_enabled BOOLEAN DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # POW proxy config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS pow_proxy_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    pow_proxy_enabled BOOLEAN DEFAULT 0,
+                    pow_proxy_url TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -1233,3 +1264,24 @@ class Database:
             """, (normalized, polling_mode_enabled))
             await db.commit()
 
+    # POW proxy config operations
+    async def get_pow_proxy_config(self) -> "PowProxyConfig":
+        """Get POW proxy configuration"""
+        from .models import PowProxyConfig
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM pow_proxy_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if row:
+                return PowProxyConfig(**dict(row))
+            return PowProxyConfig(pow_proxy_enabled=False, pow_proxy_url=None)
+
+    async def update_pow_proxy_config(self, pow_proxy_enabled: bool, pow_proxy_url: Optional[str] = None):
+        """Update POW proxy configuration"""
+        async with aiosqlite.connect(self.db_path) as db:
+            # Use INSERT OR REPLACE to ensure the row exists
+            await db.execute("""
+                INSERT OR REPLACE INTO pow_proxy_config (id, pow_proxy_enabled, pow_proxy_url, updated_at)
+                VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+            """, (pow_proxy_enabled, pow_proxy_url))
+            await db.commit()
