@@ -231,10 +231,15 @@ class SoraClient:
             )
             raise
 
-    async def _generate_sentinel_token(self, token: Optional[str] = None) -> str:
+    async def _generate_sentinel_token(
+        self,
+        token: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> str:
         """Generate openai-sentinel-token by calling /backend-api/sentinel/req and solving PoW"""
         req_id = str(uuid4())
-        user_agent = random.choice(DESKTOP_USER_AGENTS)
+        if not user_agent:
+            user_agent = random.choice(MOBILE_USER_AGENTS)
         pow_token = self._get_pow_token(user_agent)
 
         proxy_url = await self.proxy_manager.get_proxy_url()
@@ -351,16 +356,20 @@ class SoraClient:
         """
         proxy_url = await self.proxy_manager.get_proxy_url(token_id)
 
+        user_agent = random.choice(MOBILE_USER_AGENTS)
         headers = {
             "Authorization": f"Bearer {token}",
-            "User-Agent" : "Sora/1.2026.007 (Android 15; 24122RKC7C; build 2600700)",
+            "User-Agent": user_agent,
             "Origin": "https://sora.chatgpt.com",
             "Referer": "https://sora.chatgpt.com/",
         }
 
         # 只在生成请求时添加 sentinel token
         if add_sentinel_token:
-            headers["openai-sentinel-token"] = await self._generate_sentinel_token(token)
+            headers["openai-sentinel-token"] = await self._generate_sentinel_token(
+                token,
+                user_agent=user_agent,
+            )
 
         if not multipart:
             headers["Content-Type"] = "application/json"
