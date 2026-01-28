@@ -390,23 +390,16 @@ class SoraClient:
             )
             
             if "400" in error_str or "sentinel" in error_str.lower() or "invalid" in error_str.lower():
-                debug_logger.log_info("Attempting browser fallback for sentinel token...")
-                
+                debug_logger.log_info("400/invalid/sentinel detected. Using browser to call /nf/create...")
+            
+                # If we can get a browser token, use it; otherwise keep original sentinel_token
                 browser_token = await self._get_sentinel_token_via_browser(proxy_url)
-                
                 if browser_token:
-                    debug_logger.log_info("Got sentinel token from browser, retrying nf/create...")
-                    
-                    browser_data = json.loads(browser_token)
-                    browser_device_id = browser_data.get("id", device_id)
+                    sentinel_token = browser_token
+            
+                # IMPORTANT: do the POST inside the browser context
+                return await self._nf_create_browser(token, payload, sentinel_token)
 
-                    headers["OpenAI-Sentinel-Token"] = browser_token
-                    headers["OAI-Device-Id"] = browser_device_id
-                    
-                    result = await asyncio.to_thread(
-                        self._post_json_sync, url, headers, payload, 30, proxy_url
-                    )
-                    return result
             
             raise
 
@@ -859,11 +852,10 @@ class SoraClient:
         sentinel_token = await self._get_sentinel_token_via_browser(pow_proxy_url)
 
         if not sentinel_token:
-            # 如果浏览器方式失败，回退到手动 POW
-            debug_logger.log_info("[Warning] Browser sentinel token failed, falling back to manual POW")
-            sentinel_token, user_agent = await self._generate_sentinel_token(token)
+            raise Exception("Browser sentinel token required but could not be obtained (SentinelSDK timeout).")
         else:
             user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
         
         try:
             result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id, user_agent)
@@ -874,6 +866,8 @@ class SoraClient:
                 "Just a moment" in err
                 or "challenge-platform" in err
                 or "cloudflare" in err.lower()
+                or "HTTP Error: 400" in err
+                or "Unable to process request" in err
             ):
                 result = await self._nf_create_browser(token, json_data, sentinel_token)
                 return result["id"]
