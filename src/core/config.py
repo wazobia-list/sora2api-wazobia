@@ -1,5 +1,4 @@
 """Configuration management"""
-import os
 import tomli
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -45,13 +44,6 @@ class Config:
     @property
     def sora_base_url(self) -> str:
         return self._config["sora"]["base_url"]
-
-    @property
-    def sora_use_urllib_nf_create(self) -> bool:
-        env_value = os.getenv("USE_URLLIB_NF_CREATE")
-        if env_value is not None:
-            return env_value.strip().lower() in {"1", "true", "yes", "on"}
-        return self._config.get("sora", {}).get("use_urllib_nf_create", False)
     
     @property
     def sora_timeout(self) -> int:
@@ -243,6 +235,28 @@ class Config:
             self._config["call_logic"] = {}
         self._config["call_logic"]["call_mode"] = normalized
         self._config["call_logic"]["polling_mode_enabled"] = normalized == "polling"
+
+    @property
+    def pow_proxy_enabled(self) -> bool:
+        """Get POW proxy enabled status"""
+        return self._config.get("pow_proxy", {}).get("pow_proxy_enabled", False)
+
+    def set_pow_proxy_enabled(self, enabled: bool):
+        """Set POW proxy enabled/disabled"""
+        if "pow_proxy" not in self._config:
+            self._config["pow_proxy"] = {}
+        self._config["pow_proxy"]["pow_proxy_enabled"] = enabled
+
+    @property
+    def pow_proxy_url(self) -> str:
+        """Get POW proxy URL"""
+        return self._config.get("pow_proxy", {}).get("pow_proxy_url", "")
+
+    def set_pow_proxy_url(self, url: str):
+        """Set POW proxy URL"""
+        if "pow_proxy" not in self._config:
+            self._config["pow_proxy"] = {}
+        self._config["pow_proxy"]["pow_proxy_url"] = url
 
 # Global config instance
 config = Config()
