@@ -410,6 +410,64 @@ class SoraClient:
             
             raise
 
+    async def _nf_create_browser(self, token: str, payload: dict, sentinel_token: str) -> Dict[str, Any]:
+        if not PLAYWRIGHT_AVAILABLE:
+            raise RuntimeError("Playwright is not available; install playwright to use browser fallback.")
+
+        user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(user_agent=user_agent)
+            page = await context.new_page()
+            try:
+                await page.goto("https://sora.chatgpt.com/", wait_until="domcontentloaded")
+
+                url = "https://sora.chatgpt.com/backend/nf/create"
+
+                js = """
+                async ({ url, token, sentinelToken, payload }) => {
+                  const res = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                      "Authorization": `Bearer ${token}`,
+                      "OpenAI-Sentinel-Token": sentinelToken,
+                      "Content-Type": "application/json",
+                      "Origin": "https://sora.chatgpt.com",
+                      "Referer": "https://sora.chatgpt.com/",
+                    },
+                    body: JSON.stringify(payload),
+                    credentials: "include"
+                  });
+
+                  const text = await res.text();
+                  return { status: res.status, text };
+                }
+                """
+
+                result = await page.evaluate(
+                    js,
+                    {
+                        "url": url,
+                        "token": token,
+                        "sentinelToken": sentinel_token,
+                        "payload": payload,
+                    },
+                )
+            finally:
+                await context.close()
+                await browser.close()
+
+        if result["status"] not in (200, 201):
+            raise Exception(
+                f"Browser nf/create failed: {result['status']} {result['text'][:500]}"
+            )
+
+        return json.loads(result["text"])
+
     @staticmethod
     def _post_text_sync(url: str, headers: dict, body: str, timeout: int, proxy: Optional[str]) -> Dict[str, Any]:
         data = body.encode("utf-8")
@@ -807,8 +865,19 @@ class SoraClient:
         else:
             user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         
-        result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id, user_agent)
-        return result["id"]
+        try:
+            result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id, user_agent)
+            return result["id"]
+        except Exception as e:
+            err = str(e)
+            if (
+                "Just a moment" in err
+                or "challenge-platform" in err
+                or "cloudflare" in err.lower()
+            ):
+                result = await self._nf_create_browser(token, json_data, sentinel_token)
+                return result["id"]
+            raise
     
     async def get_image_tasks(self, token: str, limit: int = 20, token_id: Optional[int] = None) -> Dict[str, Any]:
         """Get recent image generation tasks"""
@@ -1217,8 +1286,19 @@ class SoraClient:
         # Generate sentinel token and call /nf/create using urllib
         proxy_url = await self.proxy_manager.get_proxy_url()
         sentinel_token, user_agent = await self._generate_sentinel_token(token)
-        result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, user_agent=user_agent)
-        return result.get("id")
+        try:
+            result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, user_agent=user_agent)
+            return result.get("id")
+        except Exception as e:
+            err = str(e)
+            if (
+                "Just a moment" in err
+                or "challenge-platform" in err
+                or "cloudflare" in err.lower()
+            ):
+                result = await self._nf_create_browser(token, json_data, sentinel_token)
+                return result.get("id")
+            raise
 
     async def generate_storyboard(self, prompt: str, token: str, orientation: str = "landscape",
                                  media_id: Optional[str] = None, n_frames: int = 450, style_id: Optional[str] = None) -> str:
