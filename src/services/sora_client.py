@@ -1367,3 +1367,18 @@ class SoraClient:
 
         result = await self._make_request("POST", "/editor/enhance_prompt", token, json_data=json_data, token_id=token_id)
         return result.get("enhanced_prompt", "")
+
+    async def close(self) -> None:
+        # If you don’t store sessions, this is a no-op but keeps shutdown clean.
+        sessions = getattr(self, "_sessions", None)
+        if not sessions:
+            return
+
+        # close any cached curl_cffi AsyncSession objects
+        for s in sessions.values():
+            try:
+                await s.aclose()
+            except Exception:
+                pass
+
+        sessions.clear()
