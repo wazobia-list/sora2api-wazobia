@@ -169,10 +169,27 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
-    await generation_handler.file_cache.stop_cleanup_task()
-    await sora_client.close()
+
+    # Stop cache cleanup task safely
+    try:
+        await generation_handler.file_cache.stop_cleanup_task()
+    except Exception:
+        pass
+
+    # Safely close sora_client if close() exists
+    close_fn = getattr(sora_client, "close", None)
+    if callable(close_fn):
+        try:
+            await close_fn()
+        except Exception:
+            pass
+
+    # Stop scheduler safely
     if scheduler.running:
-        scheduler.shutdown()
+        try:
+            scheduler.shutdown()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     uvicorn.run(
