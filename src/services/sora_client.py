@@ -270,7 +270,24 @@ class SoraClient:
                 try:
                     launch_args = {
                         "headless": True,
-                        "args": ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+                        "args": [
+                            "--disable-blink-features=AutomationControlled",
+                            "--disable-dev-shm-usage",
+                            "--disable-web-security",
+                            "--disable-features=IsolateOrigins,site-per-process",
+                            "--no-sandbox",
+                            "--disable-setuid-sandbox",
+                            "--disable-accelerated-2d-canvas",
+                            "--disable-gpu",
+                            "--window-size=1920,1080",
+                            "--disable-extensions",
+                            "--disable-background-networking",
+                            "--disable-sync",
+                            "--metrics-recording-only",
+                            "--disable-default-apps",
+                            "--mute-audio",
+                            "--no-first-run",
+                        ],
                     }
     
                     if proxy_url:
@@ -293,9 +310,16 @@ class SoraClient:
                     debug_logger.log_info(f"[Browser] goto status={status}, url={final_url}, title={title}")
                     debug_logger.log_info(f"[Browser] html_head={html[:400]!r}")
     
+                    html_lower = html.lower()
                     is_cf_challenge = (
-                        status == 403
-                        and ("Just a moment" in title or "noindex,nofollow" in html or "cf-" in html.lower())
+                        status in (403, 429, 503)
+                        and (
+                            "just a moment" in title
+                            or "noindex,nofollow" in html_lower
+                            or "cf-" in html_lower
+                            or "cf-turnstile" in html_lower
+                            or "challenge-platform" in html_lower
+                        )
                     )
                     if is_cf_challenge:
                         error_message = "Cloudflare challenge detected (403) while loading sora.chatgpt.com."
@@ -323,7 +347,7 @@ class SoraClient:
                     try:
                         await page.wait_for_function(
                             "() => window.SentinelSDK && typeof window.SentinelSDK.token === 'function'",
-                            timeout=90000
+                            timeout=120000
                         )
                     except Exception:
                         debug_logger.log_info("[Browser] SentinelSDK load timeout")
@@ -463,7 +487,27 @@ class SoraClient:
         )
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--disable-web-security",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-accelerated-2d-canvas",
+                    "--disable-gpu",
+                    "--window-size=1920,1080",
+                    "--disable-extensions",
+                    "--disable-background-networking",
+                    "--disable-sync",
+                    "--metrics-recording-only",
+                    "--disable-default-apps",
+                    "--mute-audio",
+                    "--no-first-run",
+                ],
+            )
             context = await browser.new_context(user_agent=user_agent)
             page = await context.new_page()
             try:
