@@ -293,6 +293,17 @@ class SoraClient:
                     debug_logger.log_info(f"[Browser] goto status={status}, url={final_url}, title={title}")
                     debug_logger.log_info(f"[Browser] html_head={html[:400]!r}")
     
+                    is_cf_challenge = (
+                        status == 403
+                        and ("Just a moment" in title or "noindex,nofollow" in html or "cf-" in html.lower())
+                    )
+                    if is_cf_challenge:
+                        error_message = "Cloudflare challenge detected (403) while loading sora.chatgpt.com."
+                        debug_logger.log_info(
+                            "[Browser] Blocked by Cloudflare challenge page (403). Cannot obtain SentinelSDK."
+                        )
+                        raise Exception(error_message)
+    
                     # Get oai-did cookie if present
                     cookies = await context.cookies()
                     device_id = None
@@ -378,6 +389,8 @@ class SoraClient:
                 response_text=str(e),
                 source="Server"
             )
+            if "cloudflare challenge" in str(e).lower():
+                raise
             return None
 
 
