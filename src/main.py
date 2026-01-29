@@ -83,6 +83,11 @@ async def root():
     </html>
     """
 
+@app.head("/")
+async def head_root():
+    """Handle head request for root"""
+    return {}
+
 @app.get("/login", response_class=FileResponse)
 async def login_page():
     """Serve login page"""
