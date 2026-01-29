@@ -258,143 +258,285 @@ class SoraClient:
             raise Exception(f"URL Error: {exc}") from exc
 
     async def _get_sentinel_token_via_browser(self, proxy_url: Optional[str] = None) -> Optional[str]:
+        """Get sentinel token via Playwright browser with stealth configuration
+        
+        Enhanced with:
+        - Stealth mode to bypass Cloudflare detection
+        - Human-like delays
+        - Better error handling
+        - Cloudflare challenge detection and waiting
+        """
         if not PLAYWRIGHT_AVAILABLE:
-            debug_logger.log_info("[Warning] Playwright not available, cannot use browser fallback")
+            debug_logger.log_info("[Browser] Playwright not available")
             return None
-    
+
         try:
             async with async_playwright() as p:
                 browser = None
                 context = None
-    
                 try:
+                    # Generate device ID once
+                    device_id = str(uuid4())
+                    
+                    # Configure stealth browser launch arguments
                     launch_args = {
                         "headless": True,
                         "args": [
-                            "--disable-blink-features=AutomationControlled",
-                            "--disable-dev-shm-usage",
-                            "--disable-web-security",
-                            "--disable-features=IsolateOrigins,site-per-process",
-                            "--no-sandbox",
-                            "--disable-setuid-sandbox",
-                            "--disable-accelerated-2d-canvas",
-                            "--disable-gpu",
-                            "--window-size=1920,1080",
-                            "--disable-extensions",
-                            "--disable-background-networking",
-                            "--disable-sync",
-                            "--metrics-recording-only",
-                            "--disable-default-apps",
-                            "--mute-audio",
-                            "--no-first-run",
-                        ],
+                            '--disable-blink-features=AutomationControlled',
+                            '--disable-dev-shm-usage',
+                            '--disable-web-security',
+                            '--disable-features=IsolateOrigins,site-per-process',
+                            '--no-sandbox',
+                            '--disable-setuid-sandbox',
+                            '--disable-accelerated-2d-canvas',
+                            '--disable-gpu',
+                            '--window-size=1920,1080',
+                            '--disable-extensions',
+                            '--disable-background-networking',
+                            '--disable-sync',
+                            '--metrics-recording-only',
+                            '--disable-default-apps',
+                            '--mute-audio',
+                            '--no-first-run',
+                            '--safebrowsing-disable-auto-update',
+                            '--disable-client-side-phishing-detection',
+                            '--disable-component-update',
+                            '--disable-hang-monitor'
+                        ]
                     }
-    
+
+                    # Add proxy if provided
                     if proxy_url:
-                        launch_args["proxy"] = {"server": proxy_url}
-    
+                        from urllib.parse import urlparse
+                        try:
+                            parsed = urlparse(proxy_url)
+                            if parsed.hostname and parsed.port:
+                                proxy_config = {
+                                    "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+                                }
+                                if parsed.username and parsed.password:
+                                    proxy_config["username"] = parsed.username
+                                    proxy_config["password"] = parsed.password
+                                launch_args["proxy"] = proxy_config
+                                debug_logger.log_info(f"[Browser] Using proxy: {parsed.hostname}:{parsed.port}")
+                        except Exception as e:
+                            debug_logger.log_info(f"[Browser] Proxy parse error: {e}")
+
+                    # Launch browser
+                    debug_logger.log_info("[Browser] Launching browser with stealth mode...")
                     browser = await p.chromium.launch(**launch_args)
+
+                    # Create context with realistic browser profile
+                    realistic_user_agent = random.choice(DESKTOP_USER_AGENTS)
                     context = await browser.new_context(
-                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                        viewport={'width': 1920, 'height': 1080},
+                        user_agent=realistic_user_agent,
+                        locale='en-US',
+                        timezone_id='America/New_York',
+                        permissions=[],
+                        color_scheme='dark',
+                        device_scale_factor=1,
+                        has_touch=False,
+                        is_mobile=False,
+                        java_script_enabled=True
                     )
+
+                    # Add comprehensive stealth scripts
+                    await context.add_init_script("""
+                        // Remove webdriver property
+                        Object.defineProperty(navigator, 'webdriver', {
+                            get: () => undefined
+                        });
+
+                        // Mock plugins to look like real Chrome
+                        Object.defineProperty(navigator, 'plugins', {
+                            get: () => [
+                                {name: 'Chrome PDF Plugin'},
+                                {name: 'Chrome PDF Viewer'},
+                                {name: 'Native Client'}
+                            ]
+                        });
+
+                        // Mock languages
+                        Object.defineProperty(navigator, 'languages', {
+                            get: () => ['en-US', 'en']
+                        });
+
+                        // Add chrome object
+                        window.chrome = {
+                            runtime: {},
+                            loadTimes: function() {},
+                            csi: function() {},
+                            app: {}
+                        };
+
+                        // Mock permissions
+                        const originalQuery = window.navigator.permissions.query;
+                        window.navigator.permissions.query = (parameters) => (
+                            parameters.name === 'notifications' ?
+                                Promise.resolve({ state: Notification.permission }) :
+                                originalQuery(parameters)
+                        );
+
+                        // Override the navigator platform
+                        Object.defineProperty(navigator, 'platform', {
+                            get: () => 'Win32'
+                        });
+
+                        // Mock battery API
+                        Object.defineProperty(navigator, 'getBattery', {
+                            get: () => undefined
+                        });
+
+                        // Add expected browser properties
+                        window.navigator.brave = undefined;
+                        window.navigator.msLaunchUri = undefined;
+                    """)
+
                     page = await context.new_page()
-    
-                    debug_logger.log_info("[Browser] Navigating to sora.chatgpt.com...")
-                    resp = await page.goto("https://sora.chatgpt.com", wait_until="load", timeout=120000)
-    
-                    # --- Proof logging: what did we actually load? ---
-                    final_url = page.url
-                    status = resp.status if resp else None
-                    title = await page.title()
-                    html = await page.content()
-                    debug_logger.log_info(f"[Browser] goto status={status}, url={final_url}, title={title}")
-                    debug_logger.log_info(f"[Browser] html_head={html[:400]!r}")
-    
-                    html_lower = html.lower()
-                    is_cf_challenge = (
-                        status in (403, 429, 503)
-                        and (
-                            "just a moment" in title
-                            or "noindex,nofollow" in html_lower
-                            or "cf-" in html_lower
-                            or "cf-turnstile" in html_lower
-                            or "challenge-platform" in html_lower
-                        )
-                    )
-                    if is_cf_challenge:
-                        error_message = "Cloudflare challenge detected (403) while loading sora.chatgpt.com."
-                        debug_logger.log_info(
-                            "[Browser] Blocked by Cloudflare challenge page (403). Cannot obtain SentinelSDK."
-                        )
-                        raise Exception(error_message)
-    
-                    # Get oai-did cookie if present
+
+                    # Set cookies if we have oai-did
                     cookies = await context.cookies()
-                    device_id = None
-                    for cookie in cookies:
-                        if cookie.get("name") == "oai-did":
-                            device_id = cookie.get("value")
-                            break
-    
-                    if not device_id:
-                        device_id = str(uuid4())
+                    oai_did_cookie = next((c for c in cookies if c.get("name") == "oai-did"), None)
+                    
+                    if not oai_did_cookie:
                         debug_logger.log_info(f"[Browser] No oai-did cookie, generated: {device_id}")
+                        await context.add_cookies([{
+                            "name": "oai-did",
+                            "value": device_id,
+                            "domain": ".chatgpt.com",
+                            "path": "/",
+                            "expires": -1,
+                            "httpOnly": True,
+                            "secure": True,
+                            "sameSite": "None"
+                        }])
                     else:
-                        debug_logger.log_info(f"[Browser] Got oai-did from cookie: {device_id}")
-    
-                    # Wait for SentinelSDK in a more reliable way
+                        device_id = oai_did_cookie.get("value", device_id)
+                        debug_logger.log_info(f"[Browser] Using existing oai-did: {device_id}")
+
+                    # Add human-like delay before navigation
+                    await asyncio.sleep(random.uniform(1.5, 3.5))
+
+                    debug_logger.log_info("[Browser] Navigating to sora.chatgpt.com...")
+                    
+                    # Navigate with timeout
+                    response = await page.goto(
+                        "https://sora.chatgpt.com/",
+                        wait_until="domcontentloaded",
+                        timeout=30000
+                    )
+
+                    status = response.status if response else 0
+                    current_url = page.url
+                    title = await page.title()
+                    
+                    # Log HTML head for debugging
+                    html_head = await page.evaluate("() => document.head.innerHTML.substring(0, 500)")
+                    
+                    debug_logger.log_info(f"[Browser] goto status={status}, url={current_url}, title={title}")
+                    debug_logger.log_info(f"[Browser] html_head='{html_head}'")
+
+                    # Check for Cloudflare challenge page
+                    is_cloudflare_challenge = (
+                        status == 403 or
+                        "just a moment" in title.lower() or
+                        "cloudflare" in html_head.lower() or
+                        "cf_chl" in html_head.lower()
+                    )
+
+                    if is_cloudflare_challenge:
+                        debug_logger.log_info("[Browser] ⚠️ Cloudflare challenge detected, waiting for resolution...")
+                        
+                        try:
+                            # Wait for either:
+                            # 1. URL changes to the actual page (challenge passed)
+                            # 2. Page title changes (challenge passed)
+                            # 3. Timeout (challenge failed)
+                            await page.wait_for_function(
+                                """() => {
+                                    const title = document.title.toLowerCase();
+                                    const url = window.location.href;
+                                    return !title.includes('just a moment') && 
+                                           url.includes('sora.chatgpt.com') &&
+                                           !url.includes('cdn-cgi');
+                                }""",
+                                timeout=45000  # 45 seconds for challenge
+                            )
+                            
+                            debug_logger.log_info("[Browser] ✅ Cloudflare challenge passed")
+                            
+                            # Add delay after challenge
+                            await asyncio.sleep(random.uniform(2, 4))
+                            
+                        except Exception as timeout_error:
+                            debug_logger.log_info(f"[Browser] ❌ Cloudflare challenge timeout: {timeout_error}")
+                            debug_logger.log_info("[Browser] 💡 Recommendation: Use residential proxies or CAPTCHA solver")
+                            return None
+
+                    # Additional delay to let page settle
+                    await asyncio.sleep(random.uniform(1, 2))
+
+                    # Wait for SentinelSDK with extended timeout
                     debug_logger.log_info("[Browser] Waiting for SentinelSDK...")
                     try:
                         await page.wait_for_function(
                             "() => window.SentinelSDK && typeof window.SentinelSDK.token === 'function'",
-                            timeout=120000
+                            timeout=120000  # Increased to 120 seconds
                         )
-                    except Exception:
-                        debug_logger.log_info("[Browser] SentinelSDK load timeout")
+                        debug_logger.log_info("[Browser] ✅ SentinelSDK ready")
+                    except Exception as sdk_error:
+                        debug_logger.log_info(f"[Browser] ❌ SentinelSDK load timeout: {sdk_error}")
                         return None
-    
-                    debug_logger.log_info("[Browser] SentinelSDK ready, getting token...")
-    
-                    # Try to obtain token (retry 3 times)
+
+                    # Add small delay before token request
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
+
+                    debug_logger.log_info("[Browser] Getting sentinel token...")
+
+                    # Try to obtain token with retries
                     for attempt in range(3):
-                        debug_logger.log_info(f"[Browser] Getting token, attempt {attempt + 1}/3...")
                         try:
+                            debug_logger.log_info(f"[Browser] Token attempt {attempt + 1}/3...")
+                            
                             token = await page.evaluate(
                                 "(deviceId) => window.SentinelSDK.token('sora_2_create_task__auto', deviceId)",
                                 device_id
                             )
-    
+
                             if token:
-                                debug_logger.log_info("[Browser] Token obtained successfully")
-    
+                                debug_logger.log_info("[Browser] ✅ Token obtained successfully")
+
                                 # Normalize token to dict
                                 if isinstance(token, str):
                                     try:
                                         token_data = json.loads(token)
                                     except Exception:
-                                        # If it's a plain string that isn't JSON, wrap it
                                         token_data = {"token": token}
                                 else:
                                     token_data = token
-    
+
                                 # Ensure device id exists
-                                if isinstance(token_data, dict) and ("id" not in token_data or not token_data.get("id")):
-                                    token_data["id"] = device_id
-    
+                                if isinstance(token_data, dict):
+                                    if "id" not in token_data or not token_data.get("id"):
+                                        token_data["id"] = device_id
+
                                 return json.dumps(token_data, ensure_ascii=False, separators=(",", ":"))
                             else:
-                                debug_logger.log_info("[Browser] Token is empty")
-    
-                        except Exception as e:
-                            debug_logger.log_info(f"[Browser] Token exception: {str(e)}")
-    
+                                debug_logger.log_info("[Browser] ⚠️ Token is empty")
+
+                        except Exception as token_error:
+                            debug_logger.log_info(f"[Browser] Token error: {str(token_error)}")
+
+                        # Wait before retry
                         if attempt < 2:
-                            await asyncio.sleep(2)
-    
+                            await asyncio.sleep(random.uniform(2, 4))
+
+                    debug_logger.log_info("[Browser] ❌ All token attempts failed")
                     return None
-    
+
                 finally:
-                    # Clean shutdown prevents Playwright InvalidStateError noise
+                    # Clean shutdown
                     try:
                         if context:
                             await context.close()
@@ -405,7 +547,7 @@ class SoraClient:
                             await browser.close()
                     except Exception:
                         pass
-    
+
         except Exception as e:
             debug_logger.log_error(
                 error_message=f"Browser sentinel token failed: {str(e)}",
@@ -413,8 +555,6 @@ class SoraClient:
                 response_text=str(e),
                 source="Server"
             )
-            if "cloudflare challenge" in str(e).lower():
-                raise
             return None
 
 
