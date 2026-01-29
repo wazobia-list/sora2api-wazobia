@@ -382,26 +382,37 @@ class SoraClient:
             return result
         except Exception as e:
             error_str = str(e)
+            error_lower = error_str.lower()
+        
             debug_logger.log_error(
                 error_message=f"nf/create request failed: {error_str}",
                 status_code=0,
                 response_text=error_str,
                 source="Server"
             )
-            
-            if "400" in error_str or "sentinel" in error_str.lower() or "invalid" in error_str.lower():
-                debug_logger.log_info("400/invalid/sentinel detected. Using browser to call /nf/create...")
-            
-                # If we can get a browser token, use it; otherwise keep original sentinel_token
+        
+            # Trigger browser fallback not only for 400/sentinel, but also for Cloudflare 403/challenge pages
+            if (
+                "400" in error_str
+                or "http error 403" in error_lower
+                or "403" in error_str
+                or "just a moment" in error_lower
+                or "challenge-platform" in error_lower
+                or "cf_chl" in error_lower
+                or "cloudflare" in error_lower
+                or "sentinel" in error_lower
+                or "invalid" in error_lower
+            ):
+                debug_logger.log_info("Cloudflare/403/400/invalid/sentinel detected. Using browser to call /nf/create...")
+        
                 browser_token = await self._get_sentinel_token_via_browser(proxy_url)
                 if browser_token:
                     sentinel_token = browser_token
-            
-                # IMPORTANT: do the POST inside the browser context
+        
                 return await self._nf_create_browser(token, payload, sentinel_token)
-
-            
+        
             raise
+
 
     async def _nf_create_browser(self, token: str, payload: dict, sentinel_token: str) -> Dict[str, Any]:
         if not PLAYWRIGHT_AVAILABLE:
