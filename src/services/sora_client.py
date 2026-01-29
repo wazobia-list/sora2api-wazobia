@@ -261,91 +261,116 @@ class SoraClient:
         if not PLAYWRIGHT_AVAILABLE:
             debug_logger.log_info("[Warning] Playwright not available, cannot use browser fallback")
             return None
-        
+    
         try:
             async with async_playwright() as p:
-                launch_args = {
-                    "headless": True,
-                    "args": ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-                }
-                
-                if proxy_url:
-                    launch_args["proxy"] = {"server": proxy_url}
-                
-                browser = await p.chromium.launch(**launch_args)
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                )
-                
-                page = await context.new_page()
-                
-                debug_logger.log_info(f"[Browser] Navigating to sora.chatgpt.com...")
-                await page.goto("https://sora.chatgpt.com", wait_until="domcontentloaded", timeout=90000)
-                
-                cookies = await context.cookies()
-                device_id = None
-                for cookie in cookies:
-                    if cookie.get("name") == "oai-did":
-                        device_id = cookie.get("value")
-                        break
-                
-                if not device_id:
-                    device_id = str(uuid4())
-                    debug_logger.log_info(f"[Browser] No oai-did cookie, generated: {device_id}")
-                else:
-                    debug_logger.log_info(f"[Browser] Got oai-did from cookie: {device_id}")
-                
-                debug_logger.log_info(f"[Browser] Waiting for SentinelSDK...")
-                for _ in range(120):
-                    try:
-                        sdk_ready = await page.evaluate("() => typeof window.SentinelSDK !== 'undefined'")
-                        if sdk_ready:
+                browser = None
+                context = None
+    
+                try:
+                    launch_args = {
+                        "headless": True,
+                        "args": ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+                    }
+    
+                    if proxy_url:
+                        launch_args["proxy"] = {"server": proxy_url}
+    
+                    browser = await p.chromium.launch(**launch_args)
+                    context = await browser.new_context(
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    )
+                    page = await context.new_page()
+    
+                    debug_logger.log_info("[Browser] Navigating to sora.chatgpt.com...")
+                    resp = await page.goto("https://sora.chatgpt.com", wait_until="load", timeout=120000)
+    
+                    # --- Proof logging: what did we actually load? ---
+                    final_url = page.url
+                    status = resp.status if resp else None
+                    title = await page.title()
+                    html = await page.content()
+                    debug_logger.log_info(f"[Browser] goto status={status}, url={final_url}, title={title}")
+                    debug_logger.log_info(f"[Browser] html_head={html[:400]!r}")
+    
+                    # Get oai-did cookie if present
+                    cookies = await context.cookies()
+                    device_id = None
+                    for cookie in cookies:
+                        if cookie.get("name") == "oai-did":
+                            device_id = cookie.get("value")
                             break
-                    except:
-                        pass
-                    await asyncio.sleep(0.5)
-                else:
-                    debug_logger.log_info("[Browser] SentinelSDK load timeout")
-                    await browser.close()
-                    return None
-                
-                debug_logger.log_info(f"[Browser] SentinelSDK ready, getting token...")
-                
-                # 尝试获取 token，最多重试 3 次
-                for attempt in range(3):
-                    debug_logger.log_info(f"[Browser] Getting token, attempt {attempt + 1}/3...")
-                    
+    
+                    if not device_id:
+                        device_id = str(uuid4())
+                        debug_logger.log_info(f"[Browser] No oai-did cookie, generated: {device_id}")
+                    else:
+                        debug_logger.log_info(f"[Browser] Got oai-did from cookie: {device_id}")
+    
+                    # Wait for SentinelSDK in a more reliable way
+                    debug_logger.log_info("[Browser] Waiting for SentinelSDK...")
                     try:
-                        token = await page.evaluate(
-                            "(deviceId) => window.SentinelSDK.token('sora_2_create_task__auto', deviceId)",
-                            device_id
+                        await page.wait_for_function(
+                            "() => window.SentinelSDK && typeof window.SentinelSDK.token === 'function'",
+                            timeout=90000
                         )
-                        
-                        if token:
-                            debug_logger.log_info(f"[Browser] Token obtained successfully")
-                            await browser.close()
-                            
-                            if isinstance(token, str):
-                                token_data = json.loads(token)
+                    except Exception:
+                        debug_logger.log_info("[Browser] SentinelSDK load timeout")
+                        return None
+    
+                    debug_logger.log_info("[Browser] SentinelSDK ready, getting token...")
+    
+                    # Try to obtain token (retry 3 times)
+                    for attempt in range(3):
+                        debug_logger.log_info(f"[Browser] Getting token, attempt {attempt + 1}/3...")
+                        try:
+                            token = await page.evaluate(
+                                "(deviceId) => window.SentinelSDK.token('sora_2_create_task__auto', deviceId)",
+                                device_id
+                            )
+    
+                            if token:
+                                debug_logger.log_info("[Browser] Token obtained successfully")
+    
+                                # Normalize token to dict
+                                if isinstance(token, str):
+                                    try:
+                                        token_data = json.loads(token)
+                                    except Exception:
+                                        # If it's a plain string that isn't JSON, wrap it
+                                        token_data = {"token": token}
+                                else:
+                                    token_data = token
+    
+                                # Ensure device id exists
+                                if isinstance(token_data, dict) and ("id" not in token_data or not token_data.get("id")):
+                                    token_data["id"] = device_id
+    
+                                return json.dumps(token_data, ensure_ascii=False, separators=(",", ":"))
                             else:
-                                token_data = token
-                            
-                            if "id" not in token_data or not token_data.get("id"):
-                                token_data["id"] = device_id
-                            
-                            return json.dumps(token_data, ensure_ascii=False, separators=(",", ":"))
-                        else:
-                            debug_logger.log_info(f"[Browser] Token is empty")
-                            
-                    except Exception as e:
-                        debug_logger.log_info(f"[Browser] Token exception: {str(e)}")
-                    
-                    if attempt < 2:
-                        await asyncio.sleep(2)
-                
-                await browser.close()
-                return None
-                
+                                debug_logger.log_info("[Browser] Token is empty")
+    
+                        except Exception as e:
+                            debug_logger.log_info(f"[Browser] Token exception: {str(e)}")
+    
+                        if attempt < 2:
+                            await asyncio.sleep(2)
+    
+                    return None
+    
+                finally:
+                    # Clean shutdown prevents Playwright InvalidStateError noise
+                    try:
+                        if context:
+                            await context.close()
+                    except Exception:
+                        pass
+                    try:
+                        if browser:
+                            await browser.close()
+                    except Exception:
+                        pass
+    
         except Exception as e:
             debug_logger.log_error(
                 error_message=f"Browser sentinel token failed: {str(e)}",
@@ -354,6 +379,7 @@ class SoraClient:
                 source="Server"
             )
             return None
+
 
     async def _nf_create_urllib(self, token: str, payload: dict, sentinel_token: str,
                                 proxy_url: Optional[str], token_id: Optional[int] = None,
