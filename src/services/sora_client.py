@@ -35,8 +35,10 @@ _cached_sentinel_token = None
 _cached_device_id = None
 
 
+from .browser_stealth import get_stealth_args, get_stealth_context_options, inject_stealth_scripts
+
 async def _get_browser(proxy_url: str = None):
-    """Get or create browser instance (reuses existing browser)"""
+    """Get or create browser instance with stealth"""
     global _browser, _playwright, _current_proxy
     
     # If proxy changed, restart browser
@@ -48,19 +50,7 @@ async def _get_browser(proxy_url: str = None):
         _playwright = await async_playwright().start()
         launch_args = {
             'headless': True,
-            'args': [
-                '--no-sandbox',
-                '--disable-gpu',
-                '--disable-dev-shm-usage',
-                '--disable-extensions',
-                '--disable-plugins',
-                '--disable-images',
-                '--disable-default-apps',
-                '--disable-sync',
-                '--disable-translate',
-                '--disable-background-networking',
-                '--disable-software-rasterizer',
-            ]
+            'args': get_stealth_args(),  # Use stealth args
         }
         if proxy_url:
             launch_args['proxy'] = {'server': proxy_url}
