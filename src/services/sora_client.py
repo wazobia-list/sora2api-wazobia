@@ -1014,7 +1014,7 @@ class SoraClient:
 
         proxy_url = await self.proxy_manager.get_proxy_url(token_id)
 
-        # Get POW proxy from configuration
+        # Get POW proxy from configuration (for POW solver, not for sentinel)
         pow_proxy_url = None
         if config.pow_proxy_enabled:
             pow_proxy_url = config.pow_proxy_url or None
@@ -1022,8 +1022,9 @@ class SoraClient:
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
         # Try to get cached sentinel token first (using lightweight Playwright approach)
+        # ✅ FIX: Use proxy_url (residential proxy) instead of pow_proxy_url
         try:
-            sentinel_token = await _get_cached_sentinel_token(pow_proxy_url, force_refresh=False)
+            sentinel_token = await _get_cached_sentinel_token(proxy_url, force_refresh=False)  # ✅ FIXED
         except Exception as e:
             # 403/429 errors from oai-did fetch - don't retry, just fail
             error_str = str(e)
@@ -1056,8 +1057,9 @@ class SoraClient:
                 # Invalidate cache and get fresh token
                 _invalidate_sentinel_cache()
                 
+                # ✅ FIX: Use proxy_url (residential proxy) instead of pow_proxy_url
                 try:
-                    sentinel_token = await _get_cached_sentinel_token(pow_proxy_url, force_refresh=True)
+                    sentinel_token = await _get_cached_sentinel_token(proxy_url, force_refresh=True)  # ✅ FIXED
                 except Exception as refresh_e:
                     # 403/429 errors - don't continue
                     error_str = str(refresh_e)
