@@ -71,15 +71,12 @@ async def _close_browser():
 
 
 async def _fetch_oai_did(proxy_url: str = None, max_retries: int = 3) -> str:
-    """Fetch oai-did using curl_cffi (lightweight approach)
-    
-    Raises:
-        Exception: If 403 or 429 response received
-    """
+    """Fetch oai-did with exponential backoff"""
     debug_logger.log_info(f"[Sentinel] Fetching oai-did...")
     
     for attempt in range(max_retries):
         try:
+            await asyncio.sleep(random.uniform(1.0, 3.0))
             async with AsyncSession(impersonate="chrome120") as session:
                 response = await session.get(
                     "https://chatgpt.com/",
@@ -88,11 +85,14 @@ async def _fetch_oai_did(proxy_url: str = None, max_retries: int = 3) -> str:
                     allow_redirects=True
                 )
                 
-                # Check for 403/429 errors - don't retry, just fail
+                # Check for 403/429 errors
                 if response.status_code == 403:
                     raise Exception("403 Forbidden - Access denied when fetching oai-did")
                 if response.status_code == 429:
-                    raise Exception("429 Too Many Requests - Rate limited when fetching oai-did")
+                    wait_time = min(2 ** attempt * 5, 60)
+                    debug_logger.log_info(f"[Sentinel] Rate limited, waiting {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    continue
                 
                 oai_did = response.cookies.get("oai-did")
                 if oai_did:
@@ -114,7 +114,9 @@ async def _fetch_oai_did(proxy_url: str = None, max_retries: int = 3) -> str:
             debug_logger.log_info(f"[Sentinel] oai-did fetch failed: {e}")
         
         if attempt < max_retries - 1:
-            await asyncio.sleep(2)
+            backoff = 2 ** (attempt + 1)
+            debug_logger.log_info(f"[Sentinel] Retrying in {backoff}s...")
+            await asyncio.sleep(backoff)
     
     return None
 
@@ -154,11 +156,8 @@ async def _generate_sentinel_token_lightweight(proxy_url: str = None, device_id:
     debug_logger.log_info(f"[Sentinel] Starting browser...")
     browser = await _get_browser(proxy_url)
     
-    context = await browser.new_context(
-        viewport={'width': 800, 'height': 600},
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        bypass_csp=True
-    )
+    context_options = get_stealth_context_options()
+    context = await browser.new_context(**context_options)
     
     # Set cookie
     await context.add_cookies([{
@@ -169,6 +168,7 @@ async def _generate_sentinel_token_lightweight(proxy_url: str = None, device_id:
     }])
     
     page = await context.new_page()
+    await inject_stealth_scripts(page)
     
     # Route interception - inject SDK
     inject_html = '''<!DOCTYPE html><html><head><script src="https://chatgpt.com/backend-api/sentinel/sdk.js"></script></head><body></body></html>'''
