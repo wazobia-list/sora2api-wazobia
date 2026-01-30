@@ -109,3 +109,4 @@ async def inject_stealth_scripts(page):
             return getParameter.apply(this, [parameter]);
         };
     """)
+    
