@@ -584,6 +584,14 @@ class GenerationHandler:
             if not concurrency_acquired:
                 raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
 
+        # Track whether concurrency slots were acquired so finally block can release them
+        image_slot_acquired = is_image and self.concurrency_manager is not None and (
+            token_obj is not None
+        )
+        video_slot_acquired = is_video and self.concurrency_manager is not None and (
+            token_obj is not None
+        )
+
         task_id = None
         is_first_chunk = True  # Track if this is the first chunk
         log_id = None  # Initialize log_id
@@ -715,13 +723,7 @@ class GenerationHandler:
             # Release lock for image generation
             if is_image:
                 await self.load_balancer.token_lock.release_lock(token_obj.id)
-                # Release concurrency slot for image generation
-                if self.concurrency_manager:
-                    await self.concurrency_manager.release_image(token_obj.id)
-
-            # Release concurrency slot for video generation
-            if is_video and self.concurrency_manager:
-                await self.concurrency_manager.release_video(token_obj.id)
+                # NOTE: image concurrency slot is released in the finally block below
 
             # Log successful request with complete task info
             duration = time.time() - start_time
@@ -757,13 +759,7 @@ class GenerationHandler:
             # Release lock for image generation on error
             if is_image and token_obj:
                 await self.load_balancer.token_lock.release_lock(token_obj.id)
-                # Release concurrency slot for image generation
-                if self.concurrency_manager:
-                    await self.concurrency_manager.release_image(token_obj.id)
-
-            # Release concurrency slot for video generation on error
-            if is_video and token_obj and self.concurrency_manager:
-                await self.concurrency_manager.release_video(token_obj.id)
+                # NOTE: image concurrency slot is released in the finally block below
 
             # Parse error message to check if it's a structured error (JSON)
             error_response = None
@@ -816,6 +812,12 @@ class GenerationHandler:
                 raise e
 
         finally:
+            # Release concurrency slots — always runs regardless of success, error, or cancellation
+            if image_slot_acquired and self.concurrency_manager and token_obj:
+                await self.concurrency_manager.release_image(token_obj.id)
+            if video_slot_acquired and self.concurrency_manager and token_obj:
+                await self.concurrency_manager.release_video(token_obj.id)
+
             # Ensure log is updated even if exception handling fails
             # This prevents logs from being stuck at status_code = -1
             if log_id and not log_updated:
@@ -969,15 +971,7 @@ class GenerationHandler:
                 if not is_video and token_id:
                     await self.load_balancer.token_lock.release_lock(token_id)
                     debug_logger.log_info(f"Released lock for token {token_id} due to timeout")
-                    # Release concurrency slot for image generation
-                    if self.concurrency_manager:
-                        await self.concurrency_manager.release_image(token_id)
-                        debug_logger.log_info(f"Released concurrency slot for token {token_id} due to timeout")
-
-                # Release concurrency slot for video generation
-                if is_video and token_id and self.concurrency_manager:
-                    await self.concurrency_manager.release_video(token_id)
-                    debug_logger.log_info(f"Released concurrency slot for token {token_id} due to timeout")
+                    # Concurrency slot is released by handle_generation's finally block
 
                 # Update task status to failed
                 await self.db.update_task(task_id, "failed", 0, error_message=f"Generation timeout after {elapsed_time:.1f} seconds")
@@ -1067,10 +1061,7 @@ class GenerationHandler:
                                     # Update task status
                                     await self.db.update_task(task_id, "failed", 0, error_message=error_message)
 
-                                    # Release resources
-                                    if token_id and self.concurrency_manager:
-                                        await self.concurrency_manager.release_video(token_id)
-                                        debug_logger.log_info(f"Released concurrency slot for token {token_id} due to content violation")
+                                    # Concurrency slot is released by handle_generation's finally block
 
                                     # Return error in stream format
                                     if stream:
@@ -1438,13 +1429,10 @@ class GenerationHandler:
                             duration=duration
                         )
 
-                    # Release resources
+                    # Release lock for image generation
                     if not is_video and token_id:
                         await self.load_balancer.token_lock.release_lock(token_id)
-                        if self.concurrency_manager:
-                            await self.concurrency_manager.release_image(token_id)
-                    if is_video and token_id and self.concurrency_manager:
-                        await self.concurrency_manager.release_video(token_id)
+                    # Concurrency slot is released by handle_generation's finally block
 
                     # Send error message to client if streaming
                     if stream:
@@ -1469,15 +1457,7 @@ class GenerationHandler:
         if not is_video and token_id:
             await self.load_balancer.token_lock.release_lock(token_id)
             debug_logger.log_info(f"Released lock for token {token_id} due to max attempts reached")
-            # Release concurrency slot for image generation
-            if self.concurrency_manager:
-                await self.concurrency_manager.release_image(token_id)
-                debug_logger.log_info(f"Released concurrency slot for token {token_id} due to max attempts reached")
-
-        # Release concurrency slot for video generation
-        if is_video and token_id and self.concurrency_manager:
-            await self.concurrency_manager.release_video(token_id)
-            debug_logger.log_info(f"Released concurrency slot for token {token_id} due to max attempts reached")
+            # Concurrency slot is released by handle_generation's finally block
 
         await self.db.update_task(task_id, "failed", 0, error_message=f"Generation timeout after {timeout} seconds")
         raise Exception(f"Upstream API timeout: Generation exceeded {timeout} seconds limit")
