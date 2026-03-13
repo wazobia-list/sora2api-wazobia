@@ -71,28 +71,72 @@ class LoadBalancer:
         # If for video generation, filter out tokens with Sora2 quota exhausted and tokens without Sora2 support
         if for_video_generation:
             from datetime import datetime
+
             available_tokens = []
+
+            debug_logger.log_info(f"[VIDEO SELECT] active_tokens count before video filters: {len(active_tokens)}")
+
             for token in active_tokens:
-                # Skip tokens that don't have video enabled
+                remaining = None
+                if self.concurrency_manager:
+                    remaining = await self.concurrency_manager.get_video_remaining(token.id)
+
+                debug_logger.log_info(
+                    f"[VIDEO SELECT] token_id={token.id} "
+                    f"email={getattr(token, 'email', None)} "
+                    f"is_active={token.is_active} "
+                    f"expiry_time={token.expiry_time} "
+                    f"video_enabled={token.video_enabled} "
+                    f"sora2_supported={token.sora2_supported} "
+                    f"sora2_cooldown_until={token.sora2_cooldown_until} "
+                    f"video_concurrency_remaining={remaining}"
+                )
+
                 if not token.video_enabled:
+                    debug_logger.log_info(f"[VIDEO SELECT][SKIP] token {token.id}: video_enabled=False")
                     continue
 
-                # Skip tokens that don't support Sora2
                 if not token.sora2_supported:
+                    debug_logger.log_info(f"[VIDEO SELECT][SKIP] token {token.id}: sora2_supported=False/None")
                     continue
 
-                # Check if Sora2 cooldown has expired and refresh if needed
                 if token.sora2_cooldown_until and token.sora2_cooldown_until <= datetime.now():
+                    debug_logger.log_info(f"[VIDEO SELECT] token {token.id}: cooldown expired, refreshing remaining count")
                     await self.token_manager.refresh_sora2_remaining_if_cooldown_expired(token.id)
-                    # Reload token data after refresh
                     token = await self.token_manager.db.get_token(token.id)
+                
+                    if not token:
+                        debug_logger.log_info("[VIDEO SELECT][SKIP] token disappeared after cooldown refresh")
+                        continue
+                
+                    remaining = None
+                    if self.concurrency_manager:
+                        remaining = await self.concurrency_manager.get_video_remaining(token.id)
+                
+                    debug_logger.log_info(
+                        f"[VIDEO SELECT] token {token.id} after refresh: "
+                        f"sora2_supported={token.sora2_supported} "
+                        f"sora2_cooldown_until={token.sora2_cooldown_until} "
+                        f"video_concurrency_remaining={remaining}"
+                    )
 
-                # Skip tokens that are in Sora2 cooldown (quota exhausted)
                 if token and token.sora2_cooldown_until and token.sora2_cooldown_until > datetime.now():
+                    debug_logger.log_info(
+                        f"[VIDEO SELECT][SKIP] token {token.id}: cooldown active until {token.sora2_cooldown_until}"
+                    )
                     continue
 
-                if token:
-                    available_tokens.append(token)
+                if self.concurrency_manager and not await self.concurrency_manager.can_use_video(token.id):
+                    remaining = await self.concurrency_manager.get_video_remaining(token.id)
+                    debug_logger.log_info(
+                        f"[VIDEO SELECT][SKIP] token {token.id}: video concurrency exhausted, remaining={remaining}"
+                    )
+                    continue
+
+                debug_logger.log_info(f"[VIDEO SELECT][PASS] token {token.id} accepted for video generation")
+                available_tokens.append(token)
+
+            debug_logger.log_info(f"[VIDEO SELECT] available_tokens after filters: {len(available_tokens)}")
 
             if not available_tokens:
                 return None
@@ -124,26 +168,9 @@ class LoadBalancer:
             # Random selection from available tokens
             return random.choice(available_tokens)
         else:
-            # For video generation, check concurrency limit
-            if for_video_generation and self.concurrency_manager:
-                available_tokens = []
-                for token in active_tokens:
-                    if await self.concurrency_manager.can_use_video(token.id):
-                        available_tokens.append(token)
-                if not available_tokens:
-                    return None
+            # Check if polling mode is enabled
+            if config.call_logic_mode == "polling":
+                scenario = "video" if for_video_generation else "default"
+                return await self._select_round_robin(active_tokens, scenario)
 
-                # Check if polling mode is enabled
-                if config.call_logic_mode == "polling":
-                    scenario = "video"
-                    return await self._select_round_robin(available_tokens, scenario)
-
-                return random.choice(available_tokens)
-            else:
-                # For video generation without concurrency manager, no additional filtering
-                # Check if polling mode is enabled
-                if config.call_logic_mode == "polling":
-                    scenario = "video" if for_video_generation else "default"
-                    return await self._select_round_robin(active_tokens, scenario)
-
-                return random.choice(active_tokens)
+            return random.choice(active_tokens)
