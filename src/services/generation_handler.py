@@ -2267,6 +2267,14 @@ class GenerationHandler:
         if not token_obj:
             raise Exception("No available tokens for remix generation")
 
+        # Acquire video concurrency slot before entering try/except
+        video_slot_acquired = False
+        if self.concurrency_manager:
+            slot_ok = await self.concurrency_manager.acquire_video(token_obj.id)
+            if not slot_ok:
+                raise Exception(f"No available concurrency slots for token {token_obj.id}")
+            video_slot_acquired = True
+
         task_id = None
         try:
             yield self._format_stream_chunk(
@@ -2346,12 +2354,24 @@ class GenerationHandler:
                 response_text=str(e)
             )
             raise
+        finally:
+            # Release video concurrency slot — always runs regardless of success or error
+            if video_slot_acquired and self.concurrency_manager and token_obj:
+                await self.concurrency_manager.release_video(token_obj.id)
 
     async def _handle_video_extension(self, prompt: str, model_config: Dict, model_name: str) -> AsyncGenerator[str, None]:
         """Handle long video extension generation."""
         token_obj = await self.load_balancer.select_token(for_video_generation=True)
         if not token_obj:
             raise Exception("No available tokens for video extension generation")
+
+        # Acquire video concurrency slot before entering try/except
+        video_slot_acquired = False
+        if self.concurrency_manager:
+            slot_ok = await self.concurrency_manager.acquire_video(token_obj.id)
+            if not slot_ok:
+                raise Exception(f"No available concurrency slots for token {token_obj.id}")
+            video_slot_acquired = True
 
         task_id = None
         start_time = time.time()
@@ -2493,6 +2513,10 @@ class GenerationHandler:
             )
             raise
         finally:
+            # Release video concurrency slot — always runs regardless of success or error
+            if video_slot_acquired and self.concurrency_manager and token_obj:
+                await self.concurrency_manager.release_video(token_obj.id)
+
             # Ensure log is not stuck at in-progress
             if log_id and not log_updated:
                 try:
