@@ -11,6 +11,8 @@ class ConcurrencyManager:
         """Initialize concurrency manager"""
         self._image_concurrency: Dict[int, int] = {}  # token_id -> remaining image concurrency
         self._video_concurrency: Dict[int, int] = {}  # token_id -> remaining video concurrency
+        self._image_max: Dict[int, int] = {}  # token_id -> configured image concurrency max
+        self._video_max: Dict[int, int] = {}  # token_id -> configured video concurrency max
         self._lock = asyncio.Lock()  # Protect concurrent access
 
     async def initialize(self, tokens: list):
@@ -24,8 +26,10 @@ class ConcurrencyManager:
             for token in tokens:
                 if token.image_concurrency and token.image_concurrency > 0:
                     self._image_concurrency[token.id] = token.image_concurrency
+                    self._image_max[token.id] = token.image_concurrency
                 if token.video_concurrency and token.video_concurrency > 0:
                     self._video_concurrency[token.id] = token.video_concurrency
+                    self._video_max[token.id] = token.video_concurrency
             
             debug_logger.log_info(f"Concurrency manager initialized with {len(tokens)} tokens")
 
@@ -126,7 +130,11 @@ class ConcurrencyManager:
         """
         async with self._lock:
             if token_id in self._image_concurrency:
-                self._image_concurrency[token_id] += 1
+                max_val = self._image_max.get(token_id, float('inf'))
+                self._image_concurrency[token_id] = min(
+                    self._image_concurrency[token_id] + 1,
+                    int(max_val) if max_val != float('inf') else self._image_concurrency[token_id] + 1
+                )
                 debug_logger.log_info(f"Token {token_id} released image slot (remaining: {self._image_concurrency[token_id]})")
 
     async def release_video(self, token_id: int):
@@ -138,7 +146,11 @@ class ConcurrencyManager:
         """
         async with self._lock:
             if token_id in self._video_concurrency:
-                self._video_concurrency[token_id] += 1
+                max_val = self._video_max.get(token_id, float('inf'))
+                self._video_concurrency[token_id] = min(
+                    self._video_concurrency[token_id] + 1,
+                    int(max_val) if max_val != float('inf') else self._video_concurrency[token_id] + 1
+                )
                 debug_logger.log_info(f"Token {token_id} released video slot (remaining: {self._video_concurrency[token_id]})")
 
     async def get_image_remaining(self, token_id: int) -> Optional[int]:
@@ -179,13 +191,17 @@ class ConcurrencyManager:
         async with self._lock:
             if image_concurrency > 0:
                 self._image_concurrency[token_id] = image_concurrency
+                self._image_max[token_id] = image_concurrency
             elif token_id in self._image_concurrency:
                 del self._image_concurrency[token_id]
+                self._image_max.pop(token_id, None)
             
             if video_concurrency > 0:
                 self._video_concurrency[token_id] = video_concurrency
+                self._video_max[token_id] = video_concurrency
             elif token_id in self._video_concurrency:
                 del self._video_concurrency[token_id]
+                self._video_max.pop(token_id, None)
             
             debug_logger.log_info(f"Token {token_id} concurrency reset (image: {image_concurrency}, video: {video_concurrency})")
 
