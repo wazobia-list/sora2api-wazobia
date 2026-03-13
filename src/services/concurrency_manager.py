@@ -1,5 +1,6 @@
 """Concurrency manager for token-based rate limiting"""
 import asyncio
+import time
 from typing import Dict, Optional
 from ..core.logger import debug_logger
 
@@ -13,6 +14,16 @@ class ConcurrencyManager:
         self._video_concurrency: Dict[int, int] = {}  # token_id -> remaining video concurrency
         self._image_max: Dict[int, int] = {}  # token_id -> configured image concurrency max
         self._video_max: Dict[int, int] = {}  # token_id -> configured video concurrency max
+        # TTL tracking: maps token_id to a list of acquisition timestamps (one per held slot)
+        # Each entry is a float (time.time() value). When a slot is acquired, a timestamp is
+        # appended. When released, the oldest timestamp is popped. This lets us count how many
+        # slots have been held longer than SLOT_TTL and force-release them.
+        self._image_acquired_at: Dict[int, list] = {}  # token_id -> [timestamp, ...]
+        self._video_acquired_at: Dict[int, list] = {}  # token_id -> [timestamp, ...]
+        # Maximum time a single slot may be held before it is force-released (seconds).
+        # 3600 = 1 hour. In normal operation jobs complete in under 10 min, so this only
+        # fires on pathological leaks.
+        self.SLOT_TTL: int = 3600
         self._lock = asyncio.Lock()  # Protect concurrent access
 
     async def initialize(self, tokens: list):
@@ -33,6 +44,58 @@ class ConcurrencyManager:
             
             debug_logger.log_info(f"Concurrency manager initialized with {len(tokens)} tokens")
 
+    def _expire_stale_slots(self, token_id: int) -> None:
+        """Force-release slots that have been held longer than SLOT_TTL.
+
+        IMPORTANT: This method must only be called while self._lock is already held.
+        It modifies _image_concurrency, _video_concurrency, _image_acquired_at, and
+        _video_acquired_at in-place.
+
+        Args:
+            token_id: The token ID to check and expire stale slots for.
+        """
+        now = time.time()
+
+        # Expire stale image slots
+        if token_id in self._image_acquired_at:
+            timestamps = self._image_acquired_at[token_id]
+            stale = [ts for ts in timestamps if now - ts > self.SLOT_TTL]
+            if stale:
+                debug_logger.log_info(
+                    f"Token {token_id}: force-releasing {len(stale)} stale image slot(s) "
+                    f"held for >{self.SLOT_TTL}s (TTL expiry)"
+                )
+                for ts in stale:
+                    timestamps.remove(ts)
+                    if token_id in self._image_concurrency:
+                        max_val = self._image_max.get(token_id)
+                        if max_val is not None:
+                            self._image_concurrency[token_id] = min(
+                                self._image_concurrency[token_id] + 1, max_val
+                            )
+                        else:
+                            self._image_concurrency[token_id] += 1
+
+        # Expire stale video slots
+        if token_id in self._video_acquired_at:
+            timestamps = self._video_acquired_at[token_id]
+            stale = [ts for ts in timestamps if now - ts > self.SLOT_TTL]
+            if stale:
+                debug_logger.log_info(
+                    f"Token {token_id}: force-releasing {len(stale)} stale video slot(s) "
+                    f"held for >{self.SLOT_TTL}s (TTL expiry)"
+                )
+                for ts in stale:
+                    timestamps.remove(ts)
+                    if token_id in self._video_concurrency:
+                        max_val = self._video_max.get(token_id)
+                        if max_val is not None:
+                            self._video_concurrency[token_id] = min(
+                                self._video_concurrency[token_id] + 1, max_val
+                            )
+                        else:
+                            self._video_concurrency[token_id] += 1
+
     async def can_use_image(self, token_id: int) -> bool:
         """
         Check if token can be used for image generation
@@ -44,6 +107,9 @@ class ConcurrencyManager:
             True if token has available image concurrency, False if concurrency is 0
         """
         async with self._lock:
+            # Expire any stale slots before checking availability
+            self._expire_stale_slots(token_id)
+
             # If not in dict, it means no limit (-1)
             if token_id not in self._image_concurrency:
                 return True
@@ -66,6 +132,9 @@ class ConcurrencyManager:
             True if token has available video concurrency, False if concurrency is 0
         """
         async with self._lock:
+            # Expire any stale slots before checking availability
+            self._expire_stale_slots(token_id)
+
             # If not in dict, it means no limit (-1)
             if token_id not in self._video_concurrency:
                 return True
@@ -88,14 +157,23 @@ class ConcurrencyManager:
             True if acquired, False if not available
         """
         async with self._lock:
+            # Expire stale slots before attempting to acquire
+            self._expire_stale_slots(token_id)
+
             if token_id not in self._image_concurrency:
-                # No limit
+                # No limit — record timestamp anyway so TTL tracking is consistent
+                if token_id not in self._image_acquired_at:
+                    self._image_acquired_at[token_id] = []
+                self._image_acquired_at[token_id].append(time.time())
                 return True
             
             if self._image_concurrency[token_id] <= 0:
                 return False
-            
+
             self._image_concurrency[token_id] -= 1
+            if token_id not in self._image_acquired_at:
+                self._image_acquired_at[token_id] = []
+            self._image_acquired_at[token_id].append(time.time())
             debug_logger.log_info(f"Token {token_id} acquired image slot (remaining: {self._image_concurrency[token_id]})")
             return True
 
@@ -110,14 +188,23 @@ class ConcurrencyManager:
             True if acquired, False if not available
         """
         async with self._lock:
+            # Expire stale slots before attempting to acquire
+            self._expire_stale_slots(token_id)
+
             if token_id not in self._video_concurrency:
-                # No limit
+                # No limit — record timestamp anyway so TTL tracking is consistent
+                if token_id not in self._video_acquired_at:
+                    self._video_acquired_at[token_id] = []
+                self._video_acquired_at[token_id].append(time.time())
                 return True
             
             if self._video_concurrency[token_id] <= 0:
                 return False
-            
+
             self._video_concurrency[token_id] -= 1
+            if token_id not in self._video_acquired_at:
+                self._video_acquired_at[token_id] = []
+            self._video_acquired_at[token_id].append(time.time())
             debug_logger.log_info(f"Token {token_id} acquired video slot (remaining: {self._video_concurrency[token_id]})")
             return True
 
@@ -136,6 +223,9 @@ class ConcurrencyManager:
                     int(max_val) if max_val != float('inf') else self._image_concurrency[token_id] + 1
                 )
                 debug_logger.log_info(f"Token {token_id} released image slot (remaining: {self._image_concurrency[token_id]})")
+            # Pop the oldest acquisition timestamp (FIFO) to keep TTL tracking in sync
+            if token_id in self._image_acquired_at and self._image_acquired_at[token_id]:
+                self._image_acquired_at[token_id].pop(0)
 
     async def release_video(self, token_id: int):
         """
@@ -152,6 +242,9 @@ class ConcurrencyManager:
                     int(max_val) if max_val != float('inf') else self._video_concurrency[token_id] + 1
                 )
                 debug_logger.log_info(f"Token {token_id} released video slot (remaining: {self._video_concurrency[token_id]})")
+            # Pop the oldest acquisition timestamp (FIFO) to keep TTL tracking in sync
+            if token_id in self._video_acquired_at and self._video_acquired_at[token_id]:
+                self._video_acquired_at[token_id].pop(0)
 
     async def get_image_remaining(self, token_id: int) -> Optional[int]:
         """
@@ -202,6 +295,9 @@ class ConcurrencyManager:
             elif token_id in self._video_concurrency:
                 del self._video_concurrency[token_id]
                 self._video_max.pop(token_id, None)
+
+            # Clear acquisition timestamp lists so old timestamps don't cause spurious TTL expiry
+            self._image_acquired_at.pop(token_id, None)
+            self._video_acquired_at.pop(token_id, None)
             
             debug_logger.log_info(f"Token {token_id} concurrency reset (image: {image_concurrency}, video: {video_concurrency})")
-
