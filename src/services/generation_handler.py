@@ -287,8 +287,19 @@ class GenerationHandler:
             return False
         if "429" in error_str or "rate limit" in error_str:
             return False
+
+        # 排除地理封锁错误 — 这些是服务器级别的 IP 封锁，重试不会改变结果
+        # "403 forbidden - access denied when fetching oai-did": Cloudflare geo-blocks the
+        #   server's egress IP when fetching the oai-did cookie for Sentinel token generation.
+        #   All tokens on the same server share the same IP, so retrying a different token
+        #   on the same server will always 403.
         if "403 forbidden - access denied when fetching oai-did" in error_str:
-            return True
+            return False
+        # "unsupported_country_code": Sora's API itself rejects the request because the proxy
+        #   IP is from a country not supported by Sora. Retrying will hit the same block.
+        if "unsupported_country_code" in error_str:
+            return False
+
         # 参数/模型使用错误无需重试
         if "invalid model" in error_str:
             return False
