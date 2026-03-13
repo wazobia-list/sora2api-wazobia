@@ -16,7 +16,7 @@ class ConcurrencyManager:
         self._video_max: Dict[int, int] = {}  # token_id -> configured video concurrency max
         # TTL tracking: maps token_id to a list of acquisition timestamps (one per held slot)
         # Each entry is a float (time.time() value). When a slot is acquired, a timestamp is
-        # appended. When released, the oldest timestamp is popped. This lets us count how many
+        # appended. When released, the most recent timestamp is popped. This best-effort matching keeps older leaked acquisitions visible for TTL recovery when jobs complete out of order.
         # slots have been held longer than SLOT_TTL and force-release them.
         self._image_acquired_at: Dict[int, list] = {}  # token_id -> [timestamp, ...]
         self._video_acquired_at: Dict[int, list] = {}  # token_id -> [timestamp, ...]
@@ -223,9 +223,10 @@ class ConcurrencyManager:
                     int(max_val) if max_val != float('inf') else self._image_concurrency[token_id] + 1
                 )
                 debug_logger.log_info(f"Token {token_id} released image slot (remaining: {self._image_concurrency[token_id]})")
-            # Pop the oldest acquisition timestamp (FIFO) to keep TTL tracking in sync
+            # Pop the most recent acquisition timestamp (LIFO) as best-effort matching
+            # for out-of-order completions; this avoids discarding older leaked slots first.
             if token_id in self._image_acquired_at and self._image_acquired_at[token_id]:
-                self._image_acquired_at[token_id].pop(0)
+                self._image_acquired_at[token_id].pop()
 
     async def release_video(self, token_id: int):
         """
@@ -242,9 +243,10 @@ class ConcurrencyManager:
                     int(max_val) if max_val != float('inf') else self._video_concurrency[token_id] + 1
                 )
                 debug_logger.log_info(f"Token {token_id} released video slot (remaining: {self._video_concurrency[token_id]})")
-            # Pop the oldest acquisition timestamp (FIFO) to keep TTL tracking in sync
+            # Pop the most recent acquisition timestamp (LIFO) as best-effort matching
+            # for out-of-order completions; this avoids discarding older leaked slots first.
             if token_id in self._video_acquired_at and self._video_acquired_at[token_id]:
-                self._video_acquired_at[token_id].pop(0)
+                self._video_acquired_at[token_id].pop()
 
     async def get_image_remaining(self, token_id: int) -> Optional[int]:
         """
