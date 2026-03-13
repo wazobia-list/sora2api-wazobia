@@ -254,6 +254,9 @@ async def get_tokens(token: str = Depends(verify_admin_token)) -> List[dict]:
             # 并发限制
             "image_concurrency": token.image_concurrency,
             "video_concurrency": token.video_concurrency,
+            # 实时并发剩余（来自内存，可能与数据库值不同）
+            "image_concurrency_remaining": await concurrency_manager.get_image_remaining(token.id) if concurrency_manager else None,
+            "video_concurrency_remaining": await concurrency_manager.get_video_remaining(token.id) if concurrency_manager else None,
             # 过期和禁用信息
             "is_expired": token.is_expired,
             "disabled_reason": token.disabled_reason
@@ -355,6 +358,98 @@ async def disable_token(token_id: int, token: str = Depends(verify_admin_token))
     try:
         await token_manager.disable_token(token_id)
         return {"success": True, "message": "Token disabled", "is_active": 0}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/api/tokens/batch/reset-concurrency")
+async def batch_reset_concurrency(token: str = Depends(verify_admin_token)):
+    """Reset in-memory concurrency slots for ALL tokens back to their configured DB values.
+
+    Use this after a server incident where multiple tokens may have leaked slots.
+    Each token's reset values are read from its current image_concurrency and video_concurrency
+    fields in the database.
+    """
+    try:
+        if not concurrency_manager:
+            raise HTTPException(status_code=503, detail="Concurrency manager not available")
+
+        all_tokens = await db.get_all_tokens()
+        reset_results = []
+
+        for token_obj in all_tokens:
+            image_concurrency = token_obj.image_concurrency if token_obj.image_concurrency and token_obj.image_concurrency > 0 else -1
+            video_concurrency = token_obj.video_concurrency if token_obj.video_concurrency and token_obj.video_concurrency > 0 else -1
+
+            await concurrency_manager.reset_token(
+                token_obj.id,
+                image_concurrency=image_concurrency,
+                video_concurrency=video_concurrency
+            )
+
+            image_remaining = await concurrency_manager.get_image_remaining(token_obj.id)
+            video_remaining = await concurrency_manager.get_video_remaining(token_obj.id)
+
+            reset_results.append({
+                "token_id": token_obj.id,
+                "email": token_obj.email,
+                "image_concurrency_max": image_concurrency,
+                "video_concurrency_max": video_concurrency,
+                "image_remaining_after_reset": image_remaining,
+                "video_remaining_after_reset": video_remaining
+            })
+
+        return {
+            "success": True,
+            "message": f"Concurrency slots reset for {len(reset_results)} token(s)",
+            "results": reset_results
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/api/tokens/{token_id}/reset-concurrency")
+async def reset_token_concurrency(token_id: int, token: str = Depends(verify_admin_token)):
+    """Reset in-memory concurrency slots for a token back to its configured DB values.
+
+    Use this to recover from stuck/leaked concurrency counters without restarting the server.
+    The reset values are read from the token's current image_concurrency and video_concurrency
+    fields in the database, so no request body is needed.
+    """
+    try:
+        if not concurrency_manager:
+            raise HTTPException(status_code=503, detail="Concurrency manager not available")
+
+        # Load the token to get its configured concurrency limits
+        token_obj = await db.get_token(token_id)
+        if not token_obj:
+            raise HTTPException(status_code=404, detail=f"Token {token_id} not found")
+
+        image_concurrency = token_obj.image_concurrency if token_obj.image_concurrency and token_obj.image_concurrency > 0 else -1
+        video_concurrency = token_obj.video_concurrency if token_obj.video_concurrency and token_obj.video_concurrency > 0 else -1
+
+        await concurrency_manager.reset_token(
+            token_id,
+            image_concurrency=image_concurrency,
+            video_concurrency=video_concurrency
+        )
+
+        # Read back the new remaining values to return in the response
+        image_remaining = await concurrency_manager.get_image_remaining(token_id)
+        video_remaining = await concurrency_manager.get_video_remaining(token_id)
+
+        return {
+            "success": True,
+            "message": f"Concurrency slots reset for token {token_id}",
+            "token_id": token_id,
+            "image_concurrency_max": image_concurrency,
+            "video_concurrency_max": video_concurrency,
+            "image_remaining_after_reset": image_remaining,
+            "video_remaining_after_reset": video_remaining
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
