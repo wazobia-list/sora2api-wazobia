@@ -20,6 +20,11 @@ class ConcurrencyManager:
         # slots have been held longer than SLOT_TTL and force-release them.
         self._image_acquired_at: Dict[int, list] = {}  # token_id -> [timestamp, ...]
         self._video_acquired_at: Dict[int, list] = {}  # token_id -> [timestamp, ...]
+        # Tracks count of stale slots already force-released by TTL expiry. A later normal
+        # release for the same leaked request should consume this debt instead of changing
+        # counters/timestamps for currently active work.
+        self._image_stale_release_debt: Dict[int, int] = {}  # token_id -> stale releases to ignore
+        self._video_stale_release_debt: Dict[int, int] = {}  # token_id -> stale releases to ignore
         # Maximum time a single slot may be held before it is force-released (seconds).
         # 3600 = 1 hour. In normal operation jobs complete in under 10 min, so this only
         # fires on pathological leaks.
@@ -75,6 +80,7 @@ class ConcurrencyManager:
                             )
                         else:
                             self._image_concurrency[token_id] += 1
+                self._image_stale_release_debt[token_id] = self._image_stale_release_debt.get(token_id, 0) + len(stale)
 
         # Expire stale video slots
         if token_id in self._video_acquired_at:
@@ -95,6 +101,7 @@ class ConcurrencyManager:
                             )
                         else:
                             self._video_concurrency[token_id] += 1
+                self._video_stale_release_debt[token_id] = self._video_stale_release_debt.get(token_id, 0) + len(stale)
 
     async def can_use_image(self, token_id: int) -> bool:
         """
@@ -216,6 +223,18 @@ class ConcurrencyManager:
             token_id: Token ID
         """
         async with self._lock:
+            stale_debt = self._image_stale_release_debt.get(token_id, 0)
+            if stale_debt > 0:
+                # This release belongs to a slot already force-released by TTL expiry.
+                # Consume debt and avoid touching active counters/timestamps.
+                self._image_stale_release_debt[token_id] = stale_debt - 1
+                if self._image_stale_release_debt[token_id] <= 0:
+                    self._image_stale_release_debt.pop(token_id, None)
+                debug_logger.log_info(
+                    f"Token {token_id} image release ignored; slot already reclaimed by TTL expiry"
+                )
+                return
+
             if token_id in self._image_concurrency:
                 max_val = self._image_max.get(token_id, float('inf'))
                 self._image_concurrency[token_id] = min(
@@ -236,6 +255,18 @@ class ConcurrencyManager:
             token_id: Token ID
         """
         async with self._lock:
+            stale_debt = self._video_stale_release_debt.get(token_id, 0)
+            if stale_debt > 0:
+                # This release belongs to a slot already force-released by TTL expiry.
+                # Consume debt and avoid touching active counters/timestamps.
+                self._video_stale_release_debt[token_id] = stale_debt - 1
+                if self._video_stale_release_debt[token_id] <= 0:
+                    self._video_stale_release_debt.pop(token_id, None)
+                debug_logger.log_info(
+                    f"Token {token_id} video release ignored; slot already reclaimed by TTL expiry"
+                )
+                return
+
             if token_id in self._video_concurrency:
                 max_val = self._video_max.get(token_id, float('inf'))
                 self._video_concurrency[token_id] = min(
@@ -301,5 +332,7 @@ class ConcurrencyManager:
             # Clear acquisition timestamp lists so old timestamps don't cause spurious TTL expiry
             self._image_acquired_at.pop(token_id, None)
             self._video_acquired_at.pop(token_id, None)
+            self._image_stale_release_debt.pop(token_id, None)
+            self._video_stale_release_debt.pop(token_id, None)
             
             debug_logger.log_info(f"Token {token_id} concurrency reset (image: {image_concurrency}, video: {video_concurrency})")
