@@ -1067,7 +1067,7 @@ class GenerationHandler:
 
                                     # Concurrency slot is released by handle_generation's finally block
 
-                                    # Return error in stream format
+                                    # Stream error to client before raising so the user sees the reason
                                     if stream:
                                         yield self._format_stream_chunk(
                                             reasoning_content=f"**Content Policy Violation**\n\n{reason_str}\n"
@@ -1078,8 +1078,9 @@ class GenerationHandler:
                                         )
                                         yield "data: [DONE]\n\n"
 
-                                    # Stop polling immediately
-                                    return
+                                    # Raise so handle_generation records this as an error, not a success.
+                                    # The concurrency slot is released by handle_generation's finally block.
+                                    raise Exception(error_message)
 
                                 # Check if watermark-free mode is enabled
                                 watermark_free_config = await self.db.get_watermark_free_config()
