@@ -6,12 +6,14 @@ import json
 import io
 import time
 import random
+import secrets
 import string
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Tuple, List
 from uuid import uuid4
 from urllib.request import Request, urlopen, build_opener, ProxyHandler
+from urllib.parse import urlparse, urlunparse, quote, unquote
 from urllib.error import HTTPError, URLError
 from curl_cffi.requests import AsyncSession
 from curl_cffi import CurlMime
@@ -141,6 +143,7 @@ async def _fetch_oai_did(
         Exception: If 403 or 429 response received
     """
     debug_logger.log_info(f"[Sentinel] Fetching oai-did...")
+    current_proxy_url = proxy_url
     
     for attempt in range(max_retries):
         try:
@@ -154,13 +157,21 @@ async def _fetch_oai_did(
                 response = await session.get(
                     "https://chatgpt.com/",
                     headers=headers,
-                    proxy=proxy_url,
+                    proxy=current_proxy_url,
                     timeout=30,
                     allow_redirects=True
                 )
                 
-                # Check for 403/429 errors - don't retry, just fail
+                # Check for 403/429 errors
                 if response.status_code == 403:
+                    if attempt < max_retries - 1:
+                        wait_seconds = (2 ** attempt) + random.uniform(1, 4)
+                        debug_logger.log_warning(
+                            f"[Sentinel] 403 while fetching oai-did (attempt {attempt + 1}/{max_retries}), retrying in {wait_seconds:.1f}s"
+                        )
+                        current_proxy_url = _rotate_proxy_session(current_proxy_url)
+                        await asyncio.sleep(wait_seconds)
+                        continue
                     raise Exception("403 Forbidden - Access denied when fetching oai-did")
                 if response.status_code == 429:
                     raise Exception("429 Too Many Requests - Rate limited when fetching oai-did")
@@ -179,8 +190,8 @@ async def _fetch_oai_did(
                     
         except Exception as e:
             error_str = str(e)
-            # Re-raise 403/429 errors immediately
-            if "403" in error_str or "429" in error_str:
+            # Re-raise terminal 403/429 errors immediately
+            if "403 Forbidden - Access denied when fetching oai-did" in error_str or "429" in error_str:
                 raise
             debug_logger.log_info(f"[Sentinel] oai-did fetch failed: {e}")
         
@@ -188,6 +199,30 @@ async def _fetch_oai_did(
             await asyncio.sleep(2)
     
     return None
+
+
+def _rotate_proxy_session(proxy_url: Optional[str]) -> Optional[str]:
+    """Rotate session for IPRoyal proxies to force a new exit IP."""
+    if not proxy_url:
+        return proxy_url
+
+    parsed = urlparse(proxy_url)
+    if not parsed.hostname or "iproyal.com" not in parsed.hostname.lower():
+        return proxy_url
+
+    username = unquote(parsed.username) if parsed.username else ""
+    password = unquote(parsed.password) if parsed.password else ""
+    if not username or not password:
+        return proxy_url
+
+    rotated_password = f"{password}_session-{secrets.token_hex(4)}"
+    userinfo = f"{quote(username, safe='')}:{quote(rotated_password, safe='')}"
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+
+    netloc = f"{userinfo}@{host}"
+    return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
 
 
 async def _generate_sentinel_token_lightweight(
@@ -326,7 +361,7 @@ async def _get_cached_sentinel_token(
     Raises:
         Exception: If 403/429 when fetching oai-did
     """
-    global _cached_sentinel_token_map
+    global _cached_sentinel_token_map, _cached_device_id
 
     # Whether current request should be token-aware for POW
     use_token_for_pow = bool(config.pow_service_use_token_for_pow and (access_token or token_id))
@@ -385,8 +420,12 @@ async def _get_cached_sentinel_token(
 
     # Generate new token
     debug_logger.log_info("[Sentinel] Generating new token...")
+    cached_device_id = _cached_device_id if _cached_device_id else None
+    if cached_device_id:
+        debug_logger.log_info("[Sentinel] Reusing cached device_id, skipping oai-did fetch")
     token = await _generate_sentinel_token_lightweight(
         proxy_url=proxy_url,
+        device_id=cached_device_id,
         session_token=session_token if use_token_for_pow else None,
     )
 
@@ -1355,10 +1394,21 @@ class SoraClient:
         except Exception as e:
             # 403/429 errors from oai-did fetch - don't retry, just fail
             error_str = str(e)
-            if "403" in error_str or "429" in error_str:
+            if "403" in error_str:
+                wait_seconds = random.uniform(5, 10)
+                debug_logger.log_info(f"[Sentinel] 403 on sentinel fetch, waiting {wait_seconds:.1f}s before retry...")
+                await asyncio.sleep(wait_seconds)
                 debug_logger.log_error(
                     error_message=f"Failed to get sentinel token: {error_str}",
-                    status_code=403 if "403" in error_str else 429,
+                    status_code=403,
+                    response_text=error_str,
+                    source="Server"
+                )
+                raise
+            if "429" in error_str:
+                debug_logger.log_error(
+                    error_message=f"Failed to get sentinel token: {error_str}",
+                    status_code=429,
                     response_text=error_str,
                     source="Server"
                 )
@@ -1408,7 +1458,12 @@ class SoraClient:
                 except Exception as refresh_e:
                     # 403/429 errors - don't continue
                     error_str = str(refresh_e)
-                    if "403" in error_str or "429" in error_str:
+                    if "403" in error_str:
+                        wait_seconds = random.uniform(5, 10)
+                        debug_logger.log_info(f"[Sentinel] 403 on sentinel fetch, waiting {wait_seconds:.1f}s before retry...")
+                        await asyncio.sleep(wait_seconds)
+                        raise refresh_e
+                    if "429" in error_str:
                         raise refresh_e
                     sentinel_context = None
                 

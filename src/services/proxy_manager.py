@@ -1,5 +1,7 @@
 """Proxy management module"""
 from typing import Optional
+import secrets
+from urllib.parse import urlparse, urlunparse, quote, unquote
 from ..core.database import Database
 from ..core.models import ProxyConfig
 
@@ -35,6 +37,30 @@ class ProxyManager:
         if config.proxy_enabled and config.proxy_url:
             return config.proxy_url
         return None
+
+    async def get_proxy_url_rotated(self, token_id: Optional[int] = None, proxy_url: Optional[str] = None) -> Optional[str]:
+        """Get proxy URL with rotated IPRoyal session when applicable."""
+        resolved_proxy_url = await self.get_proxy_url(token_id=token_id, proxy_url=proxy_url)
+        if not resolved_proxy_url:
+            return resolved_proxy_url
+
+        parsed = urlparse(resolved_proxy_url)
+        if not parsed.hostname or "iproyal.com" not in parsed.hostname.lower():
+            return resolved_proxy_url
+
+        username = unquote(parsed.username) if parsed.username else ""
+        password = unquote(parsed.password) if parsed.password else ""
+        if not username or not password:
+            return resolved_proxy_url
+
+        rotated_password = f"{password}_session-{secrets.token_hex(4)}"
+        userinfo = f"{quote(username, safe='')}:{quote(rotated_password, safe='')}"
+        host = parsed.hostname
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+
+        netloc = f"{userinfo}@{host}"
+        return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
 
     async def get_image_upload_proxy_url(self, token_id: Optional[int] = None) -> Optional[str]:
         """Get proxy URL specifically for image uploads

@@ -282,6 +282,8 @@ class GenerationHandler:
             return False
         if "429" in error_str or "rate limit" in error_str:
             return False
+        if "403 forbidden - access denied when fetching oai-did" in error_str:
+            return True
         # 参数/模型使用错误无需重试
         if "invalid model" in error_str:
             return False
