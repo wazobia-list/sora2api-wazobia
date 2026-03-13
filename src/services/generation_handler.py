@@ -945,10 +945,14 @@ class GenerationHandler:
         poll_interval = config.poll_interval
         max_attempts = int(timeout / poll_interval)  # Calculate max attempts based on timeout
         last_progress = 0
-        start_time = time.time()
-        last_heartbeat_time = start_time  # Track last heartbeat for image generation
+        poll_start_time = time.time()  # Clock for polling timeout enforcement (starts when polling begins)
+        # Preserve the request-level start_time passed in by the caller for duration logging.
+        # If not provided (e.g. called from a handler that does not track it), fall back to poll_start_time.
+        if start_time is None:
+            start_time = poll_start_time
+        last_heartbeat_time = poll_start_time  # Track last heartbeat for image generation
         heartbeat_interval = 10  # Send heartbeat every 10 seconds for image generation
-        last_status_output_time = start_time  # Track last status output time for video generation
+        last_status_output_time = poll_start_time  # Track last status output time for video generation
         video_status_interval = 30  # Output status every 30 seconds for video generation
 
         debug_logger.log_info(f"Starting task polling: task_id={task_id}, is_video={is_video}, timeout={timeout}s, max_attempts={max_attempts}")
@@ -960,7 +964,7 @@ class GenerationHandler:
 
         for attempt in range(max_attempts):
             # Check if timeout exceeded
-            elapsed_time = time.time() - start_time
+            elapsed_time = time.time() - poll_start_time
             if elapsed_time > timeout:
                 debug_logger.log_error(
                     error_message=f"Task timeout: {elapsed_time:.1f}s > {timeout}s",
@@ -1372,7 +1376,7 @@ class GenerationHandler:
                         current_time = time.time()
                         if current_time - last_heartbeat_time >= heartbeat_interval:
                             last_heartbeat_time = current_time
-                            elapsed = int(current_time - start_time)
+                            elapsed = int(current_time - poll_start_time)
                             yield self._format_stream_chunk(
                                 reasoning_content=f"Image generation in progress... ({elapsed}s elapsed)\n"
                             )
@@ -1382,7 +1386,7 @@ class GenerationHandler:
                         current_time = time.time()
                         if current_time - last_heartbeat_time >= heartbeat_interval:
                             last_heartbeat_time = current_time
-                            elapsed = int(current_time - start_time)
+                            elapsed = int(current_time - poll_start_time)
                             yield self._format_stream_chunk(
                                 reasoning_content=f"Image generation in progress... ({elapsed}s elapsed)\n"
                             )
