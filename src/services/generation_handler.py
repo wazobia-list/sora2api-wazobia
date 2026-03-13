@@ -583,6 +583,11 @@ class GenerationHandler:
             else:
                 raise Exception("No available tokens for video generation. All tokens are either disabled, cooling down, Sora2 quota exhausted, don't support Sora2, or expired.")
 
+        # Initialise tracking flags — set to True only after a slot is successfully acquired.
+        # The finally block below releases slots only if the corresponding flag is True.
+        image_slot_acquired = False
+        video_slot_acquired = False
+
         # Acquire lock for image generation
         if is_image:
             lock_acquired = await self.load_balancer.token_lock.acquire_lock(token_obj.id)
@@ -595,20 +600,14 @@ class GenerationHandler:
                 if not concurrency_acquired:
                     await self.load_balancer.token_lock.release_lock(token_obj.id)
                     raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+                image_slot_acquired = True  # Slot is held — finally block must release it
 
         # Acquire concurrency slot for video generation
         if is_video and self.concurrency_manager:
             concurrency_acquired = await self.concurrency_manager.acquire_video(token_obj.id)
             if not concurrency_acquired:
                 raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
-
-        # Track whether concurrency slots were acquired so finally block can release them
-        image_slot_acquired = is_image and self.concurrency_manager is not None and (
-            token_obj is not None
-        )
-        video_slot_acquired = is_video and self.concurrency_manager is not None and (
-            token_obj is not None
-        )
+            video_slot_acquired = True  # Slot is held — finally block must release it
 
         task_id = None
         is_first_chunk = True  # Track if this is the first chunk
