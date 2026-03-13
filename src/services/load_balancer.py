@@ -104,11 +104,15 @@ class LoadBalancer:
                     debug_logger.log_info(f"[VIDEO SELECT] token {token.id}: cooldown expired, refreshing remaining count")
                     await self.token_manager.refresh_sora2_remaining_if_cooldown_expired(token.id)
                     token = await self.token_manager.db.get_token(token.id)
-
+                
+                    if not token:
+                        debug_logger.log_info("[VIDEO SELECT][SKIP] token disappeared after cooldown refresh")
+                        continue
+                
                     remaining = None
                     if self.concurrency_manager:
                         remaining = await self.concurrency_manager.get_video_remaining(token.id)
-
+                
                     debug_logger.log_info(
                         f"[VIDEO SELECT] token {token.id} after refresh: "
                         f"sora2_supported={token.sora2_supported} "
