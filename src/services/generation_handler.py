@@ -24,6 +24,11 @@ class GenerationError(Exception):
         super().__init__(message)
         self.token_id = token_id
 
+
+class ContentPolicyViolationError(Exception):
+    """Raised when generation fails due to content policy violation"""
+
+
 # Model configuration
 MODEL_CONFIG = {
     "gpt-image": {
@@ -290,6 +295,8 @@ class GenerationHandler:
         if "avatar-create" in error_str:
             return False
         if "参数错误" in error_str:
+            return False
+        if "content policy violation" in error_str:
             return False
 
         # 其他所有错误都可以重试
@@ -775,12 +782,14 @@ class GenerationHandler:
                 if error_info.get("code") == "cf_shield_429":
                     is_cf_or_429 = True
 
+            is_policy_violation = isinstance(e, ContentPolicyViolationError)
+
             # Record error (check if it's an overload error or CF/429 error)
             if token_obj:
                 error_str = str(e).lower()
                 is_overload = "heavy_load" in error_str or "under heavy load" in error_str
-                # Don't record error for CF shield/429 (not token's fault)
-                if not is_cf_or_429:
+                # Don't record error for CF shield/429 or user policy violations (not token's fault)
+                if not is_cf_or_429 and not is_policy_violation:
                     await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
 
             # Update log entry with error data
@@ -798,10 +807,11 @@ class GenerationHandler:
                     log_updated = True  # Mark log as updated
                 else:
                     # Generic error
+                    status_code = 400 if is_policy_violation else 500
                     await self.db.update_request_log(
                         log_id,
                         response_body=json.dumps({"error": str(e)}),
-                        status_code=500,
+                        status_code=status_code,
                         duration=duration
                     )
                     log_updated = True  # Mark log as updated
@@ -1080,7 +1090,7 @@ class GenerationHandler:
 
                                     # Raise so handle_generation records this as an error, not a success.
                                     # The concurrency slot is released by handle_generation's finally block.
-                                    raise Exception(error_message)
+                                    raise ContentPolicyViolationError(error_message)
 
                                 # Check if watermark-free mode is enabled
                                 watermark_free_config = await self.db.get_watermark_free_config()
