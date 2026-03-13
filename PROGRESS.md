@@ -12,3 +12,8 @@
 
 ### Validation snapshot
 - `python -m compileall src/services/sora_client.py src/services/generation_handler.py src/services/proxy_manager.py`
+
+### Post-review cleanup for sentinel resilience implementation
+- Removed unused `ProxyManager.get_proxy_url_rotated` dead code and corresponding unused imports from `proxy_manager.py`.
+- Updated `_rotate_proxy_session` to strip any trailing `_session-<hex>` suffix before applying a new suffix, preventing session suffix accumulation across retries.
+- Updated `_invalidate_sentinel_cache` to also clear `_cached_device_id` and log device-id-inclusive cache invalidation.

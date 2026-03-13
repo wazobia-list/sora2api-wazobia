@@ -215,7 +215,8 @@ def _rotate_proxy_session(proxy_url: Optional[str]) -> Optional[str]:
     if not username or not password:
         return proxy_url
 
-    rotated_password = f"{password}_session-{secrets.token_hex(4)}"
+    base_password = re.sub(r'_session-[0-9a-f]+$', '', password)
+    rotated_password = f"{base_password}_session-{secrets.token_hex(4)}"
     userinfo = f"{quote(username, safe='')}:{quote(rotated_password, safe='')}"
     host = parsed.hostname or ""
     if parsed.port:
@@ -361,7 +362,7 @@ async def _get_cached_sentinel_token(
     Raises:
         Exception: If 403/429 when fetching oai-did
     """
-    global _cached_sentinel_token_map, _cached_device_id
+    global _cached_device_id, _cached_sentinel_token_map
 
     # Whether current request should be token-aware for POW
     use_token_for_pow = bool(config.pow_service_use_token_for_pow and (access_token or token_id))
@@ -447,18 +448,14 @@ async def _get_cached_sentinel_token(
 
 
 def _invalidate_sentinel_cache(access_token: Optional[str] = None):
-    """Invalidate cached sentinel token (call after 400 error)
-
-    Args:
-        access_token: Optional current access token for token-scoped cache invalidation
-    """
-    global _cached_sentinel_token_map
+    global _cached_sentinel_token_map, _cached_device_id
     use_token_for_pow = bool(config.pow_service_use_token_for_pow and access_token)
     cache_key = access_token if use_token_for_pow else "__default__"
 
     if cache_key in _cached_sentinel_token_map:
         del _cached_sentinel_token_map[cache_key]
-    debug_logger.log_info("[Sentinel] Cache invalidated")
+    _cached_device_id = None
+    debug_logger.log_info("[Sentinel] Cache invalidated (including device_id)")
 
 
 # PoW related constants
