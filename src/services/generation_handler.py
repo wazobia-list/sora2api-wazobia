@@ -5,7 +5,7 @@ import base64
 import time
 import random
 import re
-from typing import Optional, AsyncGenerator, Dict, Any
+from typing import Optional, AsyncGenerator, Dict, Any, Tuple
 from datetime import datetime
 from .sora_client import SoraClient
 from .token_manager import TokenManager
@@ -326,6 +326,104 @@ class GenerationHandler:
 
         # 其他所有错误都可以重试
         return True
+
+    def _should_record_token_error(self, error: Exception) -> Tuple[bool, str]:
+        """Classify whether an error should count against token health."""
+        error_str_raw = str(error)
+        error_str = error_str_raw.lower()
+
+        error_response = None
+        error_info = {}
+        try:
+            parsed_error = json.loads(error_str_raw)
+            if isinstance(parsed_error, dict):
+                error_response = parsed_error
+                error_info = error_response.get("error", {})
+                if not isinstance(error_info, dict):
+                    error_info = {}
+        except Exception:
+            pass
+
+        error_code = str(error_info.get("code", "")).lower()
+        error_message = str(error_info.get("message", "")).lower()
+        combined = f"{error_str} {error_code} {error_message}"
+
+        if isinstance(error, ContentPolicyViolationError) or "content policy violation" in combined:
+            return False, "content_policy"
+
+        cf_markers = [
+            "cf_shield",
+            "cloudflare",
+            "429 too many requests",
+            "rate limited when fetching oai-did",
+            "rate limit",
+        ]
+        if error_code == "cf_shield_429" or any(marker in combined for marker in cf_markers):
+            return False, "cf_shield_429"
+
+        oai_did_markers = [
+            "403 forbidden - access denied when fetching oai-did",
+            "access denied when fetching oai-did",
+            "failed to get oai-did",
+        ]
+        if any(marker in combined for marker in oai_did_markers):
+            return False, "oai_did_forbidden"
+
+        network_markers = [
+            "ssl handshake",
+            "tls",
+            "handshake",
+            "proxyerror",
+            "proxy error",
+            "proxy connection",
+            "tunnel connection failed",
+            "connection aborted",
+            "connection reset",
+            "remote disconnected",
+            "max retries exceeded",
+            "read timed out",
+            "connect timeout",
+            "network is unreachable",
+            "name or service not known",
+            "temporary failure in name resolution",
+        ]
+        if any(marker in combined for marker in network_markers):
+            return False, "network_proxy_failure"
+        if "timeout" in combined and any(marker in combined for marker in ["proxy", "ssl", "tls", "read", "connect", "network"]):
+            return False, "network_proxy_failure"
+        if "dns" in combined and "authorization" not in combined:
+            return False, "network_proxy_failure"
+
+        if error_code == "unsupported_country_code" or "unsupported_country_code" in combined:
+            return False, "unsupported_country_code"
+
+        invalid_request_markers = [
+            "invalid_request_error",
+            '"code": "invalid_request"',
+            "hmmm something didn't look right with your request",
+            "something didn't look right with your request",
+            "invalid model",
+            "avatar-create",
+            "参数错误",
+        ]
+        if any(marker in combined for marker in invalid_request_markers):
+            return False, "invalid_request"
+
+        if "no available tokens for video generation" in combined or "no available tokens" in combined:
+            return False, "no_available_tokens"
+
+        auth_failure_markers = [
+            "401 unauthorized",
+            "invalid token",
+            "token invalid",
+            "account unauthorized",
+            "session invalid",
+            "authentication failed",
+        ]
+        if any(marker in combined for marker in auth_failure_markers):
+            return True, "token_auth_failure"
+
+        return False, "uncertain_non_token_fault"
 
     def _process_character_username(self, username_hint: str) -> str:
         """Process character username from API response
@@ -808,13 +906,17 @@ class GenerationHandler:
 
             is_policy_violation = isinstance(e, ContentPolicyViolationError)
 
-            # Record error (check if it's an overload error or CF/429 error)
+            # Record token error only when classified as token/account fault
             if token_obj:
                 error_str = str(e).lower()
                 is_overload = "heavy_load" in error_str or "under heavy load" in error_str
-                # Don't record error for CF shield/429 or user policy violations (not token's fault)
-                if not is_cf_or_429 and not is_policy_violation:
+                should_record, reason = self._should_record_token_error(e)
+                if should_record:
                     await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+                else:
+                    debug_logger.log_info(
+                        f"Skipping token error record for token_id={token_obj.id} reason={reason}"
+                    )
 
             # Update log entry with error data
             duration = time.time() - start_time
@@ -1851,13 +1953,17 @@ class GenerationHandler:
                 duration=duration
             )
 
-            # Record error (check if it's an overload error or CF/429 error)
+            # Record token error only when classified as token/account fault
             if token_obj:
                 error_str = str(e).lower()
                 is_overload = "heavy_load" in error_str or "under heavy load" in error_str
-                # Don't record error for CF shield/429 (not token's fault)
-                if not is_cf_or_429:
+                should_record, reason = self._should_record_token_error(e)
+                if should_record:
                     await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+                else:
+                    debug_logger.log_info(
+                        f"Skipping token error record for token_id={token_obj.id} reason={reason}"
+                    )
 
             debug_logger.log_error(
                 error_message=f"Character creation failed: {str(e)}",
@@ -2039,8 +2145,13 @@ class GenerationHandler:
             if token_obj:
                 error_str = str(e).lower()
                 is_overload = "heavy_load" in error_str or "under heavy load" in error_str
-                if not is_cf_or_429:
+                should_record, reason = self._should_record_token_error(e)
+                if should_record:
                     await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+                else:
+                    debug_logger.log_info(
+                        f"Skipping token error record for token_id={token_obj.id} reason={reason}"
+                    )
 
             debug_logger.log_error(
                 error_message=f"Character creation from generation id failed: {str(e)}",
@@ -2259,13 +2370,17 @@ class GenerationHandler:
                 if error_info.get("code") == "cf_shield_429":
                     is_cf_or_429 = True
 
-            # Record error (check if it's an overload error or CF/429 error)
+            # Record token error only when classified as token/account fault
             if token_obj:
                 error_str = str(e).lower()
                 is_overload = "heavy_load" in error_str or "under heavy load" in error_str
-                # Don't record error for CF shield/429 (not token's fault)
-                if not is_cf_or_429:
+                should_record, reason = self._should_record_token_error(e)
+                if should_record:
                     await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+                else:
+                    debug_logger.log_info(
+                        f"Skipping token error record for token_id={token_obj.id} reason={reason}"
+                    )
             debug_logger.log_error(
                 error_message=f"Character and video generation failed: {str(e)}",
                 status_code=429 if is_cf_or_429 else 500,
@@ -2376,13 +2491,17 @@ class GenerationHandler:
                 if error_info.get("code") == "cf_shield_429":
                     is_cf_or_429 = True
 
-            # Record error (check if it's an overload error or CF/429 error)
+            # Record token error only when classified as token/account fault
             if token_obj:
                 error_str = str(e).lower()
                 is_overload = "heavy_load" in error_str or "under heavy load" in error_str
-                # Don't record error for CF shield/429 (not token's fault)
-                if not is_cf_or_429:
+                should_record, reason = self._should_record_token_error(e)
+                if should_record:
                     await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+                else:
+                    debug_logger.log_info(
+                        f"Skipping token error record for token_id={token_obj.id} reason={reason}"
+                    )
             debug_logger.log_error(
                 error_message=f"Remix generation failed: {str(e)}",
                 status_code=429 if is_cf_or_429 else 500,
@@ -2519,8 +2638,13 @@ class GenerationHandler:
             if token_obj:
                 error_str = str(e).lower()
                 is_overload = "heavy_load" in error_str or "under heavy load" in error_str
-                if not is_cf_or_429:
+                should_record, reason = self._should_record_token_error(e)
+                if should_record:
                     await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+                else:
+                    debug_logger.log_info(
+                        f"Skipping token error record for token_id={token_obj.id} reason={reason}"
+                    )
 
             # Update request log on error
             if log_id:
