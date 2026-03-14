@@ -2025,13 +2025,14 @@ class SoraClient:
             "remix_target_id": None,
             "model": "sy_8",
             "metadata": None,
-            "style_id": style_id,
             "cameo_ids": None,
             "cameo_replacements": None,
             "audio_caption": None,
             "audio_transcript": None,
             "video_caption": None
         }
+        if style_id is not None and style_id != "":
+            json_data["style_id"] = style_id
 
         result = await self._make_request("POST", "/nf/create/storyboard", token, json_data=json_data, add_sentinel_token=True)
         return result.get("id")

@@ -27,3 +27,4 @@
 
 ### Validation snapshot
 - `python -m compileall src/services/generation_handler.py src/services/sora_client.py src/services/load_balancer.py`
+- Completed optional-field cleanup in `generate_storyboard` to omit `style_id` when `None`/empty, matching `generate_video` and `remix_video` behavior.
