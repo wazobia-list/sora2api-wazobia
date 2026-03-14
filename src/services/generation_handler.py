@@ -1341,9 +1341,15 @@ class GenerationHandler:
                                         if not post_id:
                                             raise Exception("Failed to get post ID from publish API")
 
-                                        debug_logger.log_info(f"[Watermark-Free] Fetching post detail for direct media URL: {post_id}")
-                                        post_detail = await self.sora_client.get_post_detail(post_id, token)
-                                        direct_post_media_url = self._extract_direct_media_url_from_post(post_detail)
+                                        direct_post_media_url = None
+                                        try:
+                                            debug_logger.log_info(f"[Watermark-Free] Fetching post detail for direct media URL: {post_id}")
+                                            post_detail = await self.sora_client.get_post_detail(post_id, token)
+                                            direct_post_media_url = self._extract_direct_media_url_from_post(post_detail)
+                                        except Exception as direct_fetch_error:
+                                            debug_logger.log_warning(
+                                                f"[Watermark-Free] Direct post detail fetch/extraction failed for post {post_id}: {str(direct_fetch_error)}"
+                                            )
 
                                         if direct_post_media_url:
                                             debug_logger.log_info("[Watermark-Free] Found direct OpenAI media URL from post detail")

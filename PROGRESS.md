@@ -56,3 +56,11 @@
 ### Validation snapshot
 - `python -m compileall src/services/generation_handler.py`
 - Ran targeted helper assertions for nested `post.items`, nested `data.attachments`, no-watermark priority, thumbnail-vs-source behavior, and oscdn exclusion.
+
+### Watermark-free direct post-detail fetch resilience fix
+- Wrapped only post-detail direct URL fetch/extraction in an inner try/except so transient `get_post_detail` failures no longer abort watermark-free mode immediately.
+- On direct-fetch failure, flow now logs a warning and continues to existing fallback parse chain (`custom` then third-party) while preserving all cache/delete semantics.
+
+### Validation snapshot
+- `python -m compileall src/services/generation_handler.py`
+- Ran focused control-flow assertions for: direct URL success path, direct-miss fallback path, and direct-fetch-exception fallback path.
