@@ -38,3 +38,29 @@
 - `python -m compileall src/services/generation_handler.py src/services/token_manager.py`
 - Ran direct helper assertions for non-penalty and penalty-worthy error examples to verify classification outcomes.
 - Verified every `record_error(` call in `generation_handler.py` is guarded by `_should_record_token_error`.
+
+### Watermark-free direct post media prioritization
+- Updated watermark-free flow to fetch published post detail immediately after publish and prefer direct OpenAI-hosted media URLs from post payload before parse fallbacks.
+- Added conservative helper validation/extraction in `GenerationHandler` to prioritize `downloadable_url`, then `encodings.source.path`, then `url`, then `download_urls.watermark`, with optional `encodings.hd/sd.path` fallback.
+- Kept existing semantics: cache selected watermark-free URL first, delete published post only after successful cache, and never delete post when cache is disabled or when cache fails and original URL is returned.
+- Preserved fallback chain/behavior when no direct URL exists: `custom parse` (when configured) then `third-party` URL.
+
+### Validation snapshot
+- `python -m compileall src/services/generation_handler.py src/services/sora_client.py`
+- Ran targeted helper assertions for direct URL priority, source path fallback, thumbnail exclusion, oscdn exclusion, empty payload behavior, and fallback-chain selection.
+
+### Watermark-free direct-media helper follow-up fix
+- Fixed direct media extraction to scan list containers (`attachments/items/assets/media`) within each candidate root dict (`post_detail`, `post_detail.post`, `post_detail.data`), preventing misses for nested payload shapes.
+- Updated candidate priority to prefer `download_urls.no_watermark` before `downloadable_url` and other fields for watermark-free mode correctness.
+
+### Validation snapshot
+- `python -m compileall src/services/generation_handler.py`
+- Ran targeted helper assertions for nested `post.items`, nested `data.attachments`, no-watermark priority, thumbnail-vs-source behavior, and oscdn exclusion.
+
+### Watermark-free direct post-detail fetch resilience fix
+- Wrapped only post-detail direct URL fetch/extraction in an inner try/except so transient `get_post_detail` failures no longer abort watermark-free mode immediately.
+- On direct-fetch failure, flow now logs a warning and continues to existing fallback parse chain (`custom` then third-party) while preserving all cache/delete semantics.
+
+### Validation snapshot
+- `python -m compileall src/services/generation_handler.py`
+- Ran focused control-flow assertions for: direct URL success path, direct-miss fallback path, and direct-fetch-exception fallback path.

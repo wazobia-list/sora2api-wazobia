@@ -5,7 +5,8 @@ import base64
 import time
 import random
 import re
-from typing import Optional, AsyncGenerator, Dict, Any, Tuple
+from urllib.parse import urlparse
+from typing import Optional, AsyncGenerator, Dict, Any, Tuple, List
 from datetime import datetime
 from .sora_client import SoraClient
 from .token_manager import TokenManager
@@ -256,6 +257,90 @@ class GenerationHandler:
             return config.cache_base_url.rstrip('/')
         # Otherwise use server address
         return f"http://{config.server_host}:{config.server_port}"
+
+    def _is_preferred_openai_media_url(self, url: str) -> bool:
+        """Validate preferred direct OpenAI-hosted media URLs."""
+        if not isinstance(url, str):
+            return False
+
+        normalized_url = url.strip()
+        if not normalized_url or not normalized_url.startswith(("http://", "https://")):
+            return False
+
+        parsed = urlparse(normalized_url)
+        host = (parsed.netloc or "").lower()
+        path = (parsed.path or "").lower()
+
+        if not host:
+            return False
+        if "oscdn2.dyysy.com" in host:
+            return False
+        if host == "videos.openai.com" or host.endswith(".videos.openai.com"):
+            return True
+
+        # Conservative fallback: allow obvious OpenAI media hosts only.
+        if "openai.com" in host and any(marker in path for marker in ["/video", ".mp4", ".mov", ".webm"]):
+            return True
+
+        return False
+
+    def _extract_url_candidates_from_media_item(self, item: Dict[str, Any]) -> List[str]:
+        """Extract ordered URL candidates from a single media-like item."""
+        if not isinstance(item, dict):
+            return []
+
+        download_urls = item.get("download_urls") or {}
+        encodings = item.get("encodings") or {}
+        source = encodings.get("source") or {}
+        hd = encodings.get("hd") or {}
+        sd = encodings.get("sd") or {}
+
+        candidates = [
+            download_urls.get("no_watermark"),
+            item.get("downloadable_url"),
+            source.get("path"),
+            item.get("url"),
+            download_urls.get("watermark"),
+            hd.get("path"),
+            sd.get("path"),
+        ]
+
+        return [candidate.strip() for candidate in candidates if isinstance(candidate, str) and candidate.strip()]
+
+    def _extract_direct_media_url_from_post(self, post_detail: Dict[str, Any]) -> Optional[str]:
+        """Extract the best direct OpenAI-hosted media URL from post detail payload."""
+        if not isinstance(post_detail, dict):
+            return None
+
+        candidate_roots: List[Dict[str, Any]] = [post_detail]
+        nested_post = post_detail.get("post")
+        nested_data = post_detail.get("data")
+        if isinstance(nested_post, dict):
+            candidate_roots.append(nested_post)
+        if isinstance(nested_data, dict):
+            candidate_roots.append(nested_data)
+
+        list_keys = ("attachments", "items", "assets", "media")
+
+        for root in candidate_roots:
+            for candidate in self._extract_url_candidates_from_media_item(root):
+                if self._is_preferred_openai_media_url(candidate):
+                    return candidate
+
+            for key in list_keys:
+                collection = root.get(key)
+                if not isinstance(collection, list):
+                    continue
+
+                for entry in collection:
+                    if not isinstance(entry, dict):
+                        continue
+
+                    for candidate in self._extract_url_candidates_from_media_item(entry):
+                        if self._is_preferred_openai_media_url(candidate):
+                            return candidate
+
+        return None
     
     def _decode_base64_image(self, image_str: str) -> bytes:
         """Decode base64 image"""
@@ -1256,8 +1341,21 @@ class GenerationHandler:
                                         if not post_id:
                                             raise Exception("Failed to get post ID from publish API")
 
-                                        # Get watermark-free video URL based on parse method
-                                        if parse_method == "custom":
+                                        direct_post_media_url = None
+                                        try:
+                                            debug_logger.log_info(f"[Watermark-Free] Fetching post detail for direct media URL: {post_id}")
+                                            post_detail = await self.sora_client.get_post_detail(post_id, token)
+                                            direct_post_media_url = self._extract_direct_media_url_from_post(post_detail)
+                                        except Exception as direct_fetch_error:
+                                            debug_logger.log_warning(
+                                                f"[Watermark-Free] Direct post detail fetch/extraction failed for post {post_id}: {str(direct_fetch_error)}"
+                                            )
+
+                                        if direct_post_media_url:
+                                            debug_logger.log_info("[Watermark-Free] Found direct OpenAI media URL from post detail")
+                                            watermark_free_url = direct_post_media_url
+                                        elif parse_method == "custom":
+                                            debug_logger.log_info("[Watermark-Free] No direct post media URL found; falling back to parse method=custom")
                                             # Use custom parse server
                                             if not watermark_config.custom_parse_url or not watermark_config.custom_parse_token:
                                                 raise Exception("Custom parse server URL or token not configured")
@@ -1274,6 +1372,7 @@ class GenerationHandler:
                                                 post_id=post_id
                                             )
                                         else:
+                                            debug_logger.log_info("[Watermark-Free] No direct post media URL found; falling back to third-party parse")
                                             # Use third-party parse (default)
                                             watermark_free_url = f"https://oscdn2.dyysy.com/MP4/{post_id}.mp4"
                                             debug_logger.log_info(f"Using third-party parse server")
