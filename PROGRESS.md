@@ -17,3 +17,14 @@
 - Removed unused `ProxyManager.get_proxy_url_rotated` dead code and corresponding unused imports from `proxy_manager.py`.
 - Updated `_rotate_proxy_session` to strip any trailing `_session-<hex>` suffix before applying a new suffix, preventing session suffix accumulation across retries.
 - Updated `_invalidate_sentinel_cache` to also clear `_cached_device_id` and log device-id-inclusive cache invalidation.
+
+## 2026-03-14
+
+### nf/create invalid request handling hardening
+- Updated generation retry classification to mark Sora upstream `invalid_request` signatures as non-retryable and emit a classifier log for operational clarity.
+- Hardened `_nf_create_urllib` cookie diagnostics to clearly indicate whether session cookie context came from POW cookie header, token `st`, or neither (without leaking sensitive cookie/token values).
+- Updated nf/create payload builders to omit optional `style_id` when `None`/empty, preventing `"style_id": null` from being sent upstream.
+
+### Validation snapshot
+- `python -m compileall src/services/generation_handler.py src/services/sora_client.py src/services/load_balancer.py`
+- Completed optional-field cleanup in `generate_storyboard` to omit `style_id` when `None`/empty, matching `generate_video` and `remix_video` behavior.
