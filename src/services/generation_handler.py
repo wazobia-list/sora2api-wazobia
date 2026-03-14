@@ -280,7 +280,21 @@ class GenerationHandler:
         Returns:
             True if should retry, False otherwise
         """
-        error_str = str(error).lower()
+        error_str_raw = str(error)
+        error_str = error_str_raw.lower()
+
+        invalid_request_markers = [
+            "invalid_request_error",
+            '"code": "invalid_request"',
+            "hmmm something didn't look right with your request",
+            "something didn't look right with your request",
+        ]
+        if any(marker in error_str for marker in invalid_request_markers):
+            debug_logger.log_info(
+                "Retry classifier: non-retryable upstream invalid request detected; "
+                f"error={error_str_raw}"
+            )
+            return False
 
         # 排除 CF Shield/429 错误（这些错误重试也会失败）
         if "cf_shield" in error_str or "cloudflare" in error_str:

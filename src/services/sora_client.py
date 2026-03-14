@@ -846,22 +846,31 @@ class SoraClient:
         }
 
         # 添加 Cookie 头（关键修复）
-        if cookie_header:
+        has_cookie_header = bool(cookie_header)
+        has_token_st = False
+
+        if has_cookie_header:
             headers["Cookie"] = cookie_header
-            debug_logger.log_info(f"[nf/create] Using cookie header from POW service (length: {len(cookie_header)})")
+            debug_logger.log_info("[nf/create] proceeding with session cookie from POW service")
         elif token_id:
             try:
                 from src.core.database import Database
                 db = Database()
                 token_obj = await db.get_token(token_id)
-                if token_obj and token_obj.st:
+                has_token_st = bool(token_obj and token_obj.st)
+                if has_token_st:
                     # 添加 session token cookie
                     headers["Cookie"] = f"__Secure-next-auth.session-token={token_obj.st}"
-                    debug_logger.log_info(f"[nf/create] Added session token cookie (length: {len(token_obj.st)})")
-                else:
-                    debug_logger.log_warning("[nf/create] No session token (st) found for this token")
+                    debug_logger.log_info("[nf/create] proceeding with session cookie from token.st")
             except Exception as e:
-                debug_logger.log_warning(f"[nf/create] Failed to get session token: {e}")
+                debug_logger.log_warning(f"[nf/create] Failed to get session token metadata: {e}")
+
+        if "Cookie" not in headers:
+            debug_logger.log_warning(
+                "[nf/create] WARNING: no session token (st) available; "
+                "nf/create proceeding without session cookie; "
+                f"token_id={token_id}; has_cookie_header={has_cookie_header}; has_st={has_token_st}"
+            )
 
         # 记录详细的 Sentinel Token 信息
         debug_logger.log_info(f"[nf/create] Preparing request to {url}")
@@ -1368,8 +1377,9 @@ class SoraClient:
             "n_frames": n_frames,
             "model": model,
             "inpaint_items": inpaint_items,
-            "style_id": style_id
         }
+        if style_id is not None and style_id != "":
+            json_data["style_id"] = style_id
 
         proxy_url = await self.proxy_manager.get_proxy_url(token_id)
 
@@ -1930,8 +1940,9 @@ class SoraClient:
             "model": "sy_8",
             "orientation": orientation,
             "n_frames": n_frames,
-            "style_id": style_id
         }
+        if style_id is not None and style_id != "":
+            json_data["style_id"] = style_id
 
         # Generate sentinel token and call /nf/create using urllib
         proxy_url = await self.proxy_manager.get_proxy_url()
