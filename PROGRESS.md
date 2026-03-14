@@ -48,3 +48,11 @@
 ### Validation snapshot
 - `python -m compileall src/services/generation_handler.py src/services/sora_client.py`
 - Ran targeted helper assertions for direct URL priority, source path fallback, thumbnail exclusion, oscdn exclusion, empty payload behavior, and fallback-chain selection.
+
+### Watermark-free direct-media helper follow-up fix
+- Fixed direct media extraction to scan list containers (`attachments/items/assets/media`) within each candidate root dict (`post_detail`, `post_detail.post`, `post_detail.data`), preventing misses for nested payload shapes.
+- Updated candidate priority to prefer `download_urls.no_watermark` before `downloadable_url` and other fields for watermark-free mode correctness.
+
+### Validation snapshot
+- `python -m compileall src/services/generation_handler.py`
+- Ran targeted helper assertions for nested `post.items`, nested `data.attachments`, no-watermark priority, thumbnail-vs-source behavior, and oscdn exclusion.

@@ -6,7 +6,7 @@ import time
 import random
 import re
 from urllib.parse import urlparse
-from typing import Optional, AsyncGenerator, Dict, Any, Tuple
+from typing import Optional, AsyncGenerator, Dict, Any, Tuple, List
 from datetime import datetime
 from .sora_client import SoraClient
 from .token_manager import TokenManager
@@ -284,50 +284,61 @@ class GenerationHandler:
 
         return False
 
+    def _extract_url_candidates_from_media_item(self, item: Dict[str, Any]) -> List[str]:
+        """Extract ordered URL candidates from a single media-like item."""
+        if not isinstance(item, dict):
+            return []
+
+        download_urls = item.get("download_urls") or {}
+        encodings = item.get("encodings") or {}
+        source = encodings.get("source") or {}
+        hd = encodings.get("hd") or {}
+        sd = encodings.get("sd") or {}
+
+        candidates = [
+            download_urls.get("no_watermark"),
+            item.get("downloadable_url"),
+            source.get("path"),
+            item.get("url"),
+            download_urls.get("watermark"),
+            hd.get("path"),
+            sd.get("path"),
+        ]
+
+        return [candidate.strip() for candidate in candidates if isinstance(candidate, str) and candidate.strip()]
+
     def _extract_direct_media_url_from_post(self, post_detail: Dict[str, Any]) -> Optional[str]:
         """Extract the best direct OpenAI-hosted media URL from post detail payload."""
-        if not isinstance(post_detail, dict) or not post_detail:
+        if not isinstance(post_detail, dict):
             return None
 
-        candidate_containers = []
+        candidate_roots: List[Dict[str, Any]] = [post_detail]
+        nested_post = post_detail.get("post")
+        nested_data = post_detail.get("data")
+        if isinstance(nested_post, dict):
+            candidate_roots.append(nested_post)
+        if isinstance(nested_data, dict):
+            candidate_roots.append(nested_data)
 
-        def _append_container(container: Any) -> None:
-            if isinstance(container, dict):
-                candidate_containers.append(container)
+        list_keys = ("attachments", "items", "assets", "media")
 
-        _append_container(post_detail)
-        _append_container(post_detail.get("post"))
-        _append_container(post_detail.get("data"))
+        for root in candidate_roots:
+            for candidate in self._extract_url_candidates_from_media_item(root):
+                if self._is_preferred_openai_media_url(candidate):
+                    return candidate
 
-        for key in ("attachments", "items", "assets", "media"):
-            entries = post_detail.get(key)
-            if isinstance(entries, list):
-                for entry in entries:
-                    _append_container(entry)
+            for key in list_keys:
+                collection = root.get(key)
+                if not isinstance(collection, list):
+                    continue
 
-        for container in candidate_containers:
-            downloadable_url = container.get("downloadable_url")
-            if self._is_preferred_openai_media_url(downloadable_url):
-                return downloadable_url
+                for entry in collection:
+                    if not isinstance(entry, dict):
+                        continue
 
-            source_path = ((container.get("encodings") or {}).get("source") or {}).get("path")
-            if self._is_preferred_openai_media_url(source_path):
-                return source_path
-
-            container_url = container.get("url")
-            if self._is_preferred_openai_media_url(container_url):
-                return container_url
-
-            watermark_url = ((container.get("download_urls") or {}).get("watermark"))
-            if self._is_preferred_openai_media_url(watermark_url):
-                return watermark_url
-
-            encodings = container.get("encodings")
-            if isinstance(encodings, dict):
-                for encoding_key in ("hd", "sd"):
-                    encoding_path = (encodings.get(encoding_key) or {}).get("path")
-                    if self._is_preferred_openai_media_url(encoding_path):
-                        return encoding_path
+                    for candidate in self._extract_url_candidates_from_media_item(entry):
+                        if self._is_preferred_openai_media_url(candidate):
+                            return candidate
 
         return None
     
