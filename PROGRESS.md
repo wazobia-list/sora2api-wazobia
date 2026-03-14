@@ -38,3 +38,13 @@
 - `python -m compileall src/services/generation_handler.py src/services/token_manager.py`
 - Ran direct helper assertions for non-penalty and penalty-worthy error examples to verify classification outcomes.
 - Verified every `record_error(` call in `generation_handler.py` is guarded by `_should_record_token_error`.
+
+### Watermark-free direct post media prioritization
+- Updated watermark-free flow to fetch published post detail immediately after publish and prefer direct OpenAI-hosted media URLs from post payload before parse fallbacks.
+- Added conservative helper validation/extraction in `GenerationHandler` to prioritize `downloadable_url`, then `encodings.source.path`, then `url`, then `download_urls.watermark`, with optional `encodings.hd/sd.path` fallback.
+- Kept existing semantics: cache selected watermark-free URL first, delete published post only after successful cache, and never delete post when cache is disabled or when cache fails and original URL is returned.
+- Preserved fallback chain/behavior when no direct URL exists: `custom parse` (when configured) then `third-party` URL.
+
+### Validation snapshot
+- `python -m compileall src/services/generation_handler.py src/services/sora_client.py`
+- Ran targeted helper assertions for direct URL priority, source path fallback, thumbnail exclusion, oscdn exclusion, empty payload behavior, and fallback-chain selection.
