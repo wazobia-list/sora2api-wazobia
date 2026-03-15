@@ -341,6 +341,56 @@ class GenerationHandler:
                             return candidate
 
         return None
+
+    def _extract_direct_no_watermark_url_from_post(self, post_detail: Dict[str, Any]) -> Optional[str]:
+        """Extract direct OpenAI no-watermark media URL from post detail payload."""
+        if not isinstance(post_detail, dict):
+            return None
+
+        candidate_roots: List[Dict[str, Any]] = [post_detail]
+        nested_post = post_detail.get("post")
+        nested_data = post_detail.get("data")
+        if isinstance(nested_post, dict):
+            candidate_roots.append(nested_post)
+        if isinstance(nested_data, dict):
+            candidate_roots.append(nested_data)
+
+        list_keys = ("attachments", "items", "assets", "media")
+
+        def _extract_no_watermark_candidate(item: Dict[str, Any]) -> Optional[str]:
+            if not isinstance(item, dict):
+                return None
+
+            download_urls = item.get("download_urls") or {}
+            candidate = download_urls.get("no_watermark")
+            if not isinstance(candidate, str):
+                return None
+
+            normalized_candidate = candidate.strip()
+            if not normalized_candidate:
+                return None
+
+            if self._is_preferred_openai_media_url(normalized_candidate):
+                return normalized_candidate
+
+            return None
+
+        for root in candidate_roots:
+            candidate = _extract_no_watermark_candidate(root)
+            if candidate:
+                return candidate
+
+            for key in list_keys:
+                collection = root.get(key)
+                if not isinstance(collection, list):
+                    continue
+
+                for entry in collection:
+                    candidate = _extract_no_watermark_candidate(entry)
+                    if candidate:
+                        return candidate
+
+        return None
     
     def _decode_base64_image(self, image_str: str) -> bytes:
         """Decode base64 image"""
@@ -1345,17 +1395,17 @@ class GenerationHandler:
                                         try:
                                             debug_logger.log_info(f"[Watermark-Free] Fetching post detail for direct media URL: {post_id}")
                                             post_detail = await self.sora_client.get_post_detail(post_id, token)
-                                            direct_post_media_url = self._extract_direct_media_url_from_post(post_detail)
+                                            direct_post_media_url = self._extract_direct_no_watermark_url_from_post(post_detail)
                                         except Exception as direct_fetch_error:
                                             debug_logger.log_warning(
                                                 f"[Watermark-Free] Direct post detail fetch/extraction failed for post {post_id}: {str(direct_fetch_error)}"
                                             )
 
                                         if direct_post_media_url:
-                                            debug_logger.log_info("[Watermark-Free] Found direct OpenAI media URL from post detail")
+                                            debug_logger.log_info("[Watermark-Free] Found direct OpenAI NO-WATERMARK media URL from post detail")
                                             watermark_free_url = direct_post_media_url
                                         elif parse_method == "custom":
-                                            debug_logger.log_info("[Watermark-Free] No direct post media URL found; falling back to parse method=custom")
+                                            debug_logger.log_info("[Watermark-Free] No direct no-watermark post media URL found; falling back to parse method=custom")
                                             # Use custom parse server
                                             if not watermark_config.custom_parse_url or not watermark_config.custom_parse_token:
                                                 raise Exception("Custom parse server URL or token not configured")
@@ -1372,7 +1422,7 @@ class GenerationHandler:
                                                 post_id=post_id
                                             )
                                         else:
-                                            debug_logger.log_info("[Watermark-Free] No direct post media URL found; falling back to third-party parse")
+                                            debug_logger.log_info("[Watermark-Free] No direct no-watermark post media URL found; falling back to third-party parse")
                                             # Use third-party parse (default)
                                             watermark_free_url = f"https://oscdn2.dyysy.com/MP4/{post_id}.mp4"
                                             debug_logger.log_info(f"Using third-party parse server")
